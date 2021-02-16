@@ -87,7 +87,7 @@ def main(params):
     criterion = nn.CrossEntropyLoss()
 
     optimizer = optim4GPU(model=model, lr=cfg.lr, warmup=cfg.warmup, total_steps=cfg.total_steps)
-    trainer = Trainer(cfg, model, params.data_iter, optimizer, save_dir, get_device())
+    trainer = Trainer(cfg, model, data_iter, optimizer, params.save_dir, get_device())
 
     if params.mode == 'train':
         def get_loss(model, batch, global_step): # make sure loss is a scalar tensor

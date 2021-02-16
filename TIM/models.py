@@ -37,6 +37,10 @@ class ModelConfig(NamedTuple):
     max_len: int = 512 # Maximum Length for Positional Embeddings
     n_segments: int = 2 # Number of Sentence Segments
 
+    @classmethod
+    def from_json(cls, file): # load config from json file
+        return cls(**json.load(open(file, "r")))
+
 
 def custom_rand(shape : tuple, a = 0, b = 1., random_seed = 0, requires_grad = False) :
     """generate a random tensor of shape `shape` fill with number in range (a, b)"""

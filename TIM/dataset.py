@@ -9,7 +9,6 @@ import torch
 import torch.nn as nn
 from tensorboardX import SummaryWriter
 
-import tokenization
 import models
 import optim
 import train
