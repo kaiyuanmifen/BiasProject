@@ -6,9 +6,12 @@ tensorflow (for loading checkpoint file)
 ## Overview
 
 This contains 9 python files.
-- [`tokenization.py`](./tokenization.py) : Tokenizers adopted from the original Google BERT's code
+- [`tokenization1.py`](./tokenization1.py) : Tokenizers adopted from the original Google BERT's code
+- [`tokenization2.py`](./tokenization2.py) : https://pypi.org/project/tokenizers/
+- [`tokenization3.py`](./tokenization3.py) : tf
 - [`checkpoint.py`](./checkpoint.py) : Functions to load a model from tensorflow's checkpoint file
-- [`models.py`](./models.py) : Model classes for a general transformer
+- [`models.py`](./models.py) : Model classes for a general transformer and TIM
+- [`dataset.py`](./dataset.py) : todo
 - [`optim.py`](./optim.py) : A custom optimizer (BertAdam class) adopted from Hugging Face's code
 - [`train.py`](./train.py) : A helper class for training and evaluation
 - [`utils.py`](./utils.py) : Several utility functions

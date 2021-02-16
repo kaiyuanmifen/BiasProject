@@ -164,7 +164,7 @@ import fire
 
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 
 class CsvDataset(Dataset):
     """ Dataset Class for CSV file """

@@ -24,27 +24,25 @@ from torch.autograd import Variable
 
 class ModelConfig(NamedTuple):
     "Configuration for BERT model"
+    #activ_fn: str = "gelu" # Non-linear Activation Function Type in Hidden Layers 
+
+    d_model:int = 512 # Dimension of Hidden Layer in Transformer Encoder
+    num_heads: int = 8 # Numher of Heads in Multi-Headed Attention Layers
+    d_k: int = 512
+    d_v: int = 512
+    num_encoder_layers: int = 6 # Numher of Hidden Layers
+    dim_feedforward: int = 2048 # Dimension of Intermediate Layers in Positionwise Feedforward Net
+    dropout_rate: int = 0.1
     vocab_size: int = None # Size of Vocabulary
-    dim: int = 768 # Dimension of Hidden Layer in Transformer Encoder
-    n_layers: int = 12 # Numher of Hidden Layers
-    n_heads: int = 12 # Numher of Heads in Multi-Headed Attention Layers
-    dim_ff: int = 768*4 # Dimension of Intermediate Layers in Positionwise Feedforward Net
-    #activ_fn: str = "gelu" # Non-linear Activation Function Type in Hidden Layers
-    p_drop_hidden: float = 0.1 # Probability of Dropout of various Hidden Layers
-    p_drop_attn: float = 0.1 # Probability of Dropout of Attention Layers
     max_len: int = 512 # Maximum Length for Positional Embeddings
     n_segments: int = 2 # Number of Sentence Segments
-
-    @classmethod
-    def from_json(cls, file):
-        return cls(**json.load(open(file, "r")))
 
 
 def custom_rand(shape : tuple, a = 0, b = 1., random_seed = 0, requires_grad = False) :
     """generate a random tensor of shape `shape` fill with number in range (a, b)"""
     torch.manual_seed(random_seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    #torch.backends.cudnn.deterministic = True
+    #torch.backends.cudnn.benchmark = False
     return (b - a) * torch.rand(shape).requires_grad_(requires_grad) + b 
 
 def _get_clones(module, N):

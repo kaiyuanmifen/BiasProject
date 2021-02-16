@@ -13,7 +13,7 @@ import torch.nn as nn
 import checkpoint
 
 
-class Config(NamedTuple):
+class TrainerConfig(NamedTuple):
     """ Hyperparameters for training """
     seed: int = 3431 # random seed
     batch_size: int = 32
