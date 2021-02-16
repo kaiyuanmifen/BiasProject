@@ -34,7 +34,7 @@ def get_parser():
     parser.add_argument("--save_dir", type=str, default="/content/bert_pretrain", help="")
     parser.add_argument("--log_dir", type=str, default="/content/bert_pretrain/runs", help="")
     parser.add_argument("--data_parallel", type=bool_flag, default=False, help="")
-    parser.add_argument("--max_len", type=int, default=512, help="")
+    parser.add_argument("--max_len", type=int, default=512, help="maximum length of tokens")
     parser.add_argument("--max_pred", type=int, default=20, help="")
     parser.add_argument("--mask_prob", type=float, default=0.15, help="")
 
@@ -50,6 +50,9 @@ def main(params):
     set_seeds(cfg.seed)
 
     tokenizer = FullTokenizer(vocab_file=params.vocab_file, do_lower_case=True)
+    #tokenizer = BertTokenizer(max_len = 512, path=".", name="test", train_path = train_path, vocab_size = 52000,min_frequency=2)
+    #tokenizer = build_tokenizer(tokenizer_path, corpus = corpus, vocab_size = params.vocab_file)
+
     tokenize = lambda x: tokenizer.tokenize(tokenizer.convert_to_unicode(x))
 
     pipeline = [Preprocess4Pretrain(params.max_pred,
@@ -62,8 +65,8 @@ def main(params):
                                    tokenize,
                                    params.max_len,
                                    pipeline=pipeline)
-
-    vocab_size = model_cfg.vocab_size
+    #assert len(data_iter) != 0
+    vocab_size = max(tokenizer.vocab.values()) 
     tim_encoder_layer = None
     tim_layers_pos = None
     transformer = Transformer(d_model = model_cfg.d_model, 

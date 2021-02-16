@@ -1,4 +1,7 @@
 import tensorflow_datasets as tfds
+import os
+
+from tokenization1 import convert_to_unicode
 
 def build_tokenizer(tokenizer_path, corpus : tuple =None, vocab_size = None):
     if os.path.exists(tokenizer_path) :
@@ -9,14 +12,14 @@ def build_tokenizer(tokenizer_path, corpus : tuple =None, vocab_size = None):
         tokenizer.save_to_file(tokenizer_path)
 
     
-    def tokenize(self, text):
-        return [tokenizer.decode([ts]) for ts in self.tokenizer.encode(text)]
+    def tokenize(text):
+        return [tokenizer.decode([ts]) for ts in tokenizer.encode(text)]
     tokenizer.tokenize = tokenize
 
-    def convert_tokens_to_ids(self, tokens):
-        return [self.tokenizer.encode(t) for t in tokens]
+    def convert_tokens_to_ids(tokens):
+        return [tokenizer.encode(t) for t in tokens]
     tokenizer.convert_tokens_to_ids = convert_tokens_to_ids
     
-    tokenizer.convert_to_unicode = lambda self, text : convert_to_unicode(text)
+    tokenizer.convert_to_unicode = convert_to_unicode
 
     return tokenizer
