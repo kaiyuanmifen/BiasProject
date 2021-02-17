@@ -192,6 +192,19 @@ class CsvDataset(Dataset):
         """ get instance array from (csv-separated) line list """
         raise NotImplementedError
 
+
+class BiasClassificationDataset(CsvDataset):
+    label = ("0", "1", "2", "3", "4")
+    def __init__(self, file, pipeline=[]):
+        super().__init__(file, pipeline)
+
+    def get_instances(self, lines):
+        for line in itertools.islice(lines, 1, None): # skip header
+            tmp = line[0].split(',') # text, label1, label2, label3, conf1, conf2, conf3
+            # todo : ask Yoshua and Dianbo
+            label = sum([ int(t) for t in  tmp[1:3] ])//3
+            yield label, tmp[0], "" # label, text_a, text_b
+
 class SenAnDataset(CsvDataset):
     """ Dataset class for Sentiment Analysis"""
     labels = ("0", "1", "2") # label names
@@ -237,7 +250,9 @@ class MNLI(CsvDataset):
 
 def dataset_class(task):
     """ Mapping from task string to Dataset Class """
-    table = {'sentiment_analysis': SenAnDataset, 'mrpc': MRPC, 'mnli': MNLI}
+    table = {'bias_classification':BiasClassificationDataset, 
+             'sentiment_analysis': SenAnDataset, 
+             'mrpc': MRPC, 'mnli': MNLI}
     return table[task]
 
 class Pipeline():

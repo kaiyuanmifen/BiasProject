@@ -56,7 +56,7 @@ def printable_text(text):
 
 def load_vocab(vocab_file):
     """Loads a vocabulary file into a dictionary."""
-    if os.path.splitext('/path/to/somefile.ext')[-1] == ".json":
+    if os.path.splitext(vocab_file)[-1] == ".json":
         with open(vocab_file) as json_data:
              return json.load(json_data)
 

@@ -9,6 +9,13 @@ import logging
 import numpy as np
 import torch
 
+PAD_token = "[PAD]"
+UNK_token = "[UNK]"
+MASK_token = "[MASK]"
+CLS_token = "[CLS]"
+SEP_token = "[SEP]"
+special_tokens=[PAD_token, UNK_token, MASK_token, CLS_token, SEP_token]
+
 def bool_flag(s):
     """
     Parse boolean arguments from the command line.

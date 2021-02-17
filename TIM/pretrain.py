@@ -9,8 +9,8 @@ import os
 import argparse 
 
 from train import TrainerConfig, Trainer
-from models import ModelConfig, Transformer, BertModel4Pretrain
-from utils import set_seeds, get_device, bool_flag
+from models import ModelConfig, Transformer, BertModel4Pretrain, TIM_EncoderLayer
+from utils import set_seeds, get_device, bool_flag, special_tokens
 from tokenization1 import FullTokenizer
 from tokenization2 import BertTokenizer
 from tokenization3 import build_tokenizer
@@ -34,9 +34,28 @@ def get_parser():
     parser.add_argument("--save_dir", type=str, default="/content/bert_pretrain", help="")
     parser.add_argument("--log_dir", type=str, default="/content/bert_pretrain/runs", help="")
     parser.add_argument("--data_parallel", type=bool_flag, default=False, help="")
+    
+    # data parameters
     parser.add_argument("--max_len", type=int, default=512, help="maximum length of tokens")
     parser.add_argument("--max_pred", type=int, default=20, help="")
     parser.add_argument("--mask_prob", type=float, default=0.15, help="")
+
+    # model parameters
+    parser.add_argument("--d_model", type=int, default=512, help="")
+    parser.add_argument("--d_k", type=int, default=512, help="")
+    parser.add_argument("--d_v", type=int, default=512, help="")
+    parser.add_argument("--num_heads", type=int, default=8, help="")    
+    parser.add_argument("--num_encoder_layers", type=int, default=6, help="")
+    parser.add_argument("--dim_feedforward", type=int, default=2048, help="")
+    parser.add_argument("--dropout_rate", type=float, default=0.1, help="")
+    parser.add_argument("--vocab_size", type=int, default=None, help="")
+    parser.add_argument("--n_segments", type=int, default=2, help="")
+
+    # tim model parameters
+    parser.add_argument("--n_s", type=int, default=2, help="")
+    parser.add_argument("--H", type=int, default=8, help="")
+    parser.add_argument("--H_c", type=int, default=8, help="")
+    parser.add_argument("--tim_layers_pos", type=str, default="", help="tim layers position : 1,2,...")
 
     parser.add_argument("--config_file", type=str, default="", help="")
 
@@ -49,9 +68,24 @@ def main(params):
     
     set_seeds(cfg.seed)
 
-    tokenizer = FullTokenizer(vocab_file=params.vocab_file, do_lower_case=True)
-    #tokenizer = BertTokenizer(max_len = 512, path=".", name="test", train_path = train_path, vocab_size = 52000,min_frequency=2)
-    #tokenizer = build_tokenizer(tokenizer_path, corpus = corpus, vocab_size = params.vocab_file)
+    option = 1
+    if option == 1 :
+        tokenizer = FullTokenizer(vocab_file=params.vocab_file, do_lower_case=True)
+    if option == 2 :
+        name="BertWordPieceTokenizer3"
+        path="data/BertWordPieceTokenizer"
+        train_path="bias_corpus3.txt"
+        vocab_size = 10000
+        st = special_tokens
+        min_frequency=2
+        tokenizer = BertTokenizer(params.max_len, path, name, train_path, vocab_size, min_frequency, st)
+    if option == 3 :
+        tokenizer_path= "data/tfds.SubwordTextEncoder_vocab3.txt"
+        with open("bias_corpus3.txt", "r") as f:
+            corpus = f.readlines()
+        vocab_size = 10000
+        st = special_tokens
+        tokenizer = build_tokenizer(tokenizer_path, corpus, vocab_size, st)
 
     tokenize = lambda x: tokenizer.tokenize(tokenizer.convert_to_unicode(x))
 
@@ -67,8 +101,14 @@ def main(params):
                                    pipeline=pipeline)
     #assert len(data_iter) != 0
     vocab_size = max(tokenizer.vocab.values()) 
-    tim_encoder_layer = None
+
     tim_layers_pos = None
+    tim_encoder_layer = None
+    if params.tim_layers_pos != "" :
+        tim_layers_pos = [int(pos) for pos in params.tim_layers_pos.split(",")]
+        tim_encoder_layer = TIM_EncoderLayer(model_cfg.d_model, model_cfg.dim_feedforward, 
+                                            params.n_s, model_cfg.d_k, model_cfg.d_v, params.H, params.H_c)
+    
     transformer = Transformer(d_model = model_cfg.d_model, 
                                 num_heads = model_cfg.num_heads, 
                                 d_k = model_cfg.d_k, d_v = model_cfg.d_k,
