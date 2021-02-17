@@ -16,19 +16,6 @@ CLS_token = "[CLS]"
 SEP_token = "[SEP]"
 special_tokens=[PAD_token, UNK_token, MASK_token, CLS_token, SEP_token]
 
-def bool_flag(s):
-    """
-    Parse boolean arguments from the command line.
-    """
-    FALSY_STRINGS = {'off', 'false', '0'}
-    TRUTHY_STRINGS = {'on', 'true', '1'}
-    if s.lower() in FALSY_STRINGS:
-        return False
-    elif s.lower() in TRUTHY_STRINGS:
-        return True
-    else:
-        raise argparse.ArgumentTypeError("Invalid value for a boolean flag!")
-
 def set_seeds(seed):
     "set random seeds"
     random.seed(seed)

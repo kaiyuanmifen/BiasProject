@@ -9,7 +9,7 @@ import os
 
 from train import Trainer
 from models import Transformer, BertModel4Pretrain, TIM_EncoderLayer
-from utils import set_seeds, get_device, bool_flag, special_tokens
+from utils import set_seeds, get_device, special_tokens
 from tokenization1 import FullTokenizer
 from tokenization2 import BertTokenizer
 from tokenization3 import build_tokenizer
@@ -105,12 +105,11 @@ def main(params):
 
 if __name__ == '__main__':
     
-    torch.manual_seed(0)
+    params = get_parser().parse_args()
+
+    torch.manual_seed(params.seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-
-    parser = get_parser()
-    params = parser.parse_args()
 
     if os.path.isfile(params.config_file):
         with open(params.config_file) as json_data:

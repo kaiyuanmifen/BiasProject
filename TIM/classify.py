@@ -12,9 +12,9 @@ import json
 import os
 import argparse 
 
-from train import TrainerConfig, Trainer
-from models import ModelConfig, Transformer, BertClassifier, TIM_EncoderLayer
-from utils import set_seeds, get_device, bool_flag, special_tokens
+from train import Trainer
+from models import Transformer, BertClassifier, TIM_EncoderLayer
+from utils import set_seeds, get_device, special_tokens
 from tokenization1 import FullTokenizer
 from tokenization2 import BertTokenizer
 from tokenization3 import build_tokenizer
@@ -25,10 +25,7 @@ from type import config_dic
 
 def main(params):
 
-    cfg = TrainerConfig.from_json(params.train_cfg)
-    model_cfg =  ModelConfig.from_json(params.model_cfg)
-
-    set_seeds(cfg.seed)
+    set_seeds(params.seed)
 
     option = 1
     if option == 1 :
@@ -56,7 +53,7 @@ def main(params):
                               TaskDataset.labels, params.max_len)]
 
     dataset = TaskDataset(params.data_file, pipeline)
-    data_iter = DataLoader(dataset, batch_size=cfg.batch_size, shuffle=True)
+    data_iter = DataLoader(dataset, batch_size=params.batch_size, shuffle=True)
 
     vocab_size = max(tokenizer.vocab.values()) 
 
@@ -64,25 +61,25 @@ def main(params):
     tim_encoder_layer = None
     if params.tim_layers_pos != "" :
         tim_layers_pos = [int(pos) for pos in params.tim_layers_pos.split(",")]
-        tim_encoder_layer = TIM_EncoderLayer(model_cfg.d_model, model_cfg.dim_feedforward, 
-                                            params.n_s, model_cfg.d_k, model_cfg.d_v, params.H, params.H_c)
-    transformer = Transformer(d_model = model_cfg.d_model, 
-                                num_heads = model_cfg.num_heads, 
-                                d_k = model_cfg.d_k, d_v = model_cfg.d_k,
-                                num_encoder_layers = model_cfg.num_encoder_layers,
-                                dim_feedforward = model_cfg.dim_feedforward,
-                                dropout = model_cfg.dropout_rate,
+        tim_encoder_layer = TIM_EncoderLayer(params.d_model, params.dim_feedforward, 
+                                            params.n_s, params.d_k, params.d_v, params.H, params.H_c)
+    transformer = Transformer(d_model = params.d_model, 
+                                num_heads = params.num_heads, 
+                                d_k = params.d_k, d_v = params.d_k,
+                                num_encoder_layers = params.num_encoder_layers,
+                                dim_feedforward = params.dim_feedforward,
+                                dropout = params.dropout_rate,
                                 vocab_size = vocab_size,
-                                max_len = model_cfg.max_len, n_segments = model_cfg.n_segments,
+                                max_len = params.max_len, n_segments = params.n_segments,
                                 tim_encoder_layer = tim_encoder_layer, tim_layers_pos = tim_layers_pos
                                 )
     n_labels=len(TaskDataset.labels)
-    model = BertClassifier(transformer, n_labels=n_labels, dropout=model_cfg.dropout_rate)
+    model = BertClassifier(transformer, n_labels=n_labels, dropout=params.dropout_rate)
 
     criterion = nn.CrossEntropyLoss()
 
-    optimizer = optim4GPU(model=model, lr=cfg.lr, warmup=cfg.warmup, total_steps=cfg.total_steps)
-    trainer = Trainer(cfg, model, data_iter, optimizer, params.save_dir, get_device())
+    optimizer = optim4GPU(model=model, lr=params.lr, warmup=params.warmup, total_steps=params.total_steps)
+    trainer = Trainer(params, model, data_iter, optimizer, params.save_dir, get_device())
 
     if params.mode == 'train':
         def get_loss(model, batch, global_step): # make sure loss is a scalar tensor
@@ -108,12 +105,11 @@ def main(params):
 
 if __name__ == '__main__':
     
-    torch.manual_seed(0)
+    params = get_parser().parse_args()
+        
+    torch.manual_seed(params.seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-
-    parser = get_parser()
-    params = parser.parse_args()
 
     if os.path.isfile(params.config_file):
         with open(params.config_file) as json_data:
