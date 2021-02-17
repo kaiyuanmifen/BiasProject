@@ -4,31 +4,12 @@
 
 import os
 import json
-from typing import NamedTuple
 from tqdm import tqdm
 
 import torch
 import torch.nn as nn
 
 import checkpoint
-
-
-class TrainerConfig(NamedTuple):
-    """ Hyperparameters for training """
-    seed: int = 3431 # random seed
-    batch_size: int = 32
-    lr: int = 5e-5 # learning rate
-    n_epochs: int = 10 # the number of epoch
-    # `warm up` period = warmup(0.1)*total_steps
-    # linearly increasing learning rate from zero to the specified value(5e-5)
-    warmup: float = 0.1
-    save_steps: int = 100 # interval for saving model
-    total_steps: int = 100000 # total number of steps to train
-
-    @classmethod
-    def from_json(cls, file): # load config from json file
-        return cls(**json.load(open(file, "r")))
-
 
 class Trainer(object):
     """Training Helper Class"""

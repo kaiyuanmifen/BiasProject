@@ -20,53 +20,8 @@ from tokenization2 import BertTokenizer
 from tokenization3 import build_tokenizer
 from dataset import Tokenizing, AddSpecialTokensWithTruncation, TokenIndexing, dataset_class
 from optim import optim4GPU
-
-def get_parser():
-    """
-    Generate a parameters parser.
-    """
-    # parse parameters
-    parser = argparse.ArgumentParser(description="Language transfer")
-
-    # main parameters
-    # https://stackoverflow.com/questions/40324356/python-argparse-choices-with-a-default-choice/40324463
-    parser.add_argument('--task', default='sentiment_analysis', const='sentiment_analysis', nargs='?',
-                                  choices=['bias_classification','sentiment_analysis', 'mrpc', 'mnli'], help='')
-    parser.add_argument("--train_cfg", type=str, default="config/classification.json", help="")
-    parser.add_argument("--model_cfg", type=str, default="config/bert_base.json", help="")
-    parser.add_argument("--vocab_file", type=str, default="", help="")
-    parser.add_argument("--data_file", type=str, default="", help="")
-    parser.add_argument("--model_file", type=str, default="", help="")
-    parser.add_argument("--pretrain_file", type=str, default="", help="")
-    parser.add_argument("--save_dir", type=str, default="/content/bert_finetune", help="")
-    parser.add_argument("--log_dir", type=str, default="/content/bert_finetune/runs", help="")
-
-    parser.add_argument("--data_parallel", type=bool_flag, default=False, help="")
-    parser.add_argument("--mode", type=str, default="train", help="")
-
-    # data parameters
-    parser.add_argument("--max_len", type=int, default=512, help="maximum length of tokens")
-
-    # model parameters
-    parser.add_argument("--d_model", type=int, default=512, help="")
-    parser.add_argument("--d_k", type=int, default=512, help="")
-    parser.add_argument("--d_v", type=int, default=512, help="")
-    parser.add_argument("--num_heads", type=int, default=8, help="")    
-    parser.add_argument("--num_encoder_layers", type=int, default=6, help="")
-    parser.add_argument("--dim_feedforward", type=int, default=2048, help="")
-    parser.add_argument("--dropout_rate", type=float, default=0.1, help="")
-    parser.add_argument("--vocab_size", type=int, default=None, help="")
-    parser.add_argument("--n_segments", type=int, default=2, help="")
-
-    # tim model parameters
-    parser.add_argument("--n_s", type=int, default=2, help="")
-    parser.add_argument("--H", type=int, default=8, help="")
-    parser.add_argument("--H_c", type=int, default=8, help="")
-    parser.add_argument("--tim_layers_pos", type=str, default="", help="tim layers position : 1,2,...")
-
-    parser.add_argument("--config_file", type=str, default="", help="")
-
-    return parser
+from params import get_parser
+from type import config_dic
 
 def main(params):
 
@@ -164,7 +119,7 @@ if __name__ == '__main__':
         with open(params.config_file) as json_data:
             data_dict = json.load(json_data)
             for key, value in data_dict.items():
-                conf = types.config_dic[key]   
+                conf = config_dic[key]   
                 if value == "False":
                     value = False
                 elif value == "True" :

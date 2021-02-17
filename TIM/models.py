@@ -5,7 +5,6 @@
 
 import math
 import json
-from typing import NamedTuple
 import copy
 from typing import Callable, List, Optional, Tuple, Any
 import math
@@ -21,26 +20,6 @@ from torch.nn import Module, ModuleList, Dropout, Linear, LayerNorm, Sequential
 #from torch.nn import MultiheadAttention
 from torch.nn.init import xavier_uniform_
 from torch.autograd import Variable
-
-class ModelConfig(NamedTuple):
-    "Configuration for BERT model"
-    #activ_fn: str = "gelu" # Non-linear Activation Function Type in Hidden Layers 
-
-    d_model:int = 512 # Dimension of Hidden Layer in Transformer Encoder
-    num_heads: int = 8 # Numher of Heads in Multi-Headed Attention Layers
-    d_k: int = 512
-    d_v: int = 512
-    num_encoder_layers: int = 6 # Numher of Hidden Layers
-    dim_feedforward: int = 2048 # Dimension of Intermediate Layers in Positionwise Feedforward Net
-    dropout_rate: int = 0.1
-    vocab_size: int = None # Size of Vocabulary
-    max_len: int = 512 # Maximum Length for Positional Embeddings
-    n_segments: int = 2 # Number of Sentence Segments
-
-    @classmethod
-    def from_json(cls, file): # load config from json file
-        return cls(**json.load(open(file, "r")))
-
 
 def custom_rand(shape : tuple, a = 0, b = 1., random_seed = 0, requires_grad = False) :
     """generate a random tensor of shape `shape` fill with number in range (a, b)"""
