@@ -36,60 +36,52 @@ Document 2 sentence 2
 Document 2 sentence 24
 ```
 Usage :
-```
-export DATA_FILE=/path/to/corpus
-export BERT_PRETRAIN=/path/to/pretrain
-export SAVE_DIR=/path/to/save
+```bash
+DATA_FILE=data/pretrain.txt
+VOCAB_PATH=data/vocab.txt
+SAVE_DIR=/content/bert_pretrain
 
-python pretrain.py \
-    --train_cfg config/pretrain.json \
-    --model_cfg config/bert_base.json \
-    --data_file $DATA_FILE \
-    --vocab $BERT_PRETRAIN/vocab.txt \
-    --save_dir $SAVE_DIR \
-    --max_len 512 \
-    --max_pred 20 \
-    --mask_prob 0.15
-```
+mkdir $SAVE_DIR
+mkdir $SAVE_DIR/runs
 
-### Fine-tuning (MRPC) Classifier with Pre-trained Transformer
+python pretrain.py --config_file config/pretrain_config.json --data_file $DATA_FILE --vocab_file $VOCAB_PATH --save_dir $SAVE_DIR 
+```
+See [pretrain.py]() and [config/pretrain_config.json]() about the others parameters
+
+### Fine-tuning (MRPC, sentiment_analysis, MNLI) Classifier with Pre-trained Transformer
 Download pretrained model [BERT-Base, Uncased](https://storage.googleapis.com/bert_models/2018_10_18/uncased_L-12_H-768_A-12.zip) and
 [GLUE Benchmark Datasets]( https://github.com/nyu-mll/GLUE-baselines) 
 before fine-tuning.
 * make sure that "total_steps" in train_mrpc.json is n_epochs*(num_data/batch_size)
-```
-export GLUE_DIR=/path/to/glue
-export BERT_PRETRAIN=/path/to/pretrain
-export SAVE_DIR=/path/to/save
+```bash
+TASK=sentiment_analysis
+DATA_FILE=data/train.csv
+VOCAB_PATH=data/vocab.txt
+SAVE_DIR=/content/bert_classification
+MODE=train
+PRETRAIN_FILE=/content/bert_pretrain/model_steps_5.pt
 
-python classify.py \
-    --task mrpc \
-    --mode train \
-    --train_cfg config/train_mrpc.json \
-    --model_cfg config/bert_base.json \
-    --data_file $GLUE_DIR/MRPC/train.tsv \
-    --pretrain_file $BERT_PRETRAIN/bert_model.ckpt \
-    --vocab $BERT_PRETRAIN/vocab.txt \
-    --save_dir $SAVE_DIR \
-    --max_len 128
-```
+mkdir $SAVE_DIR
+mkdir $SAVE_DIR/runs
 
+python classify.py --config_file config/classif_config.json --mode $MODE --task $TASK --data_file $DATA_FILE --vocab_file $VOCAB_PATH --save_dir $SAVE_DIR --pretrain_file $PRETRAIN_FILE
+```
+See [classify.py]() and [config/classif_config.json]() about the others parameters
 ### Evaluation of the trained Classifier
-```
-export GLUE_DIR=/path/to/glue
-export BERT_PRETRAIN=/path/to/pretrain
-export SAVE_DIR=/path/to/save
+```bash
+TASK=sentiment_analysis
+DATA_FILE=data/eval.csv
+VOCAB_PATH=data/vocab.txt
+SAVE_DIR=/content/bert_classification
+MODE=eval
+PRETRAIN_FILE=/content/bert_pretrain/model_steps_5.pt
 
-python classify.py \
-    --task mrpc \
-    --mode eval \
-    --train_cfg config/train_mrpc.json \
-    --model_cfg config/bert_base.json \
-    --data_file $GLUE_DIR/MRPC/dev.tsv \
-    --model_file $SAVE_DIR/model_steps_345.pt \
-    --vocab $BERT_PRETRAIN/vocab.txt \
-    --max_len 128
+mkdir $SAVE_DIR
+mkdir $SAVE_DIR/runs
+
+python classify.py --config_file config/classif_config.json --mode $MODE --task $TASK --data_file $DATA_FILE --vocab_file $VOCAB_PATH --save_dir $SAVE_DIR --pretrain_file $PRETRAIN_FILE
 ```
+
 
 
 
