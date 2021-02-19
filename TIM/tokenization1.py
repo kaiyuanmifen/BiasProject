@@ -69,7 +69,7 @@ def load_vocab(vocab_file):
             if not token:
                 break
             token = token.strip()
-            vocab[token] = index
+            vocab[token] = vocab.get(token, index) # avoid repetition
             index += 1
     return vocab
 

@@ -1,13 +1,10 @@
 {
     "vocab_file":"",
     "data_file":"",
-    "model_file" : "",
-    "save_dir":"/content/bert_pretrain",
-    "log_dir":"/content/bert_pretrain/runs",
-    "data_parallel":"False",
     "max_len":512,
-    "max_pred":20,
-    "mask_prob":0.15,
+    "vocab_size":"",
+    "n_segments":2,
+
     "d_model":512,
     "d_k":512,
     "d_v":512,
@@ -15,21 +12,33 @@
     "num_encoder_layers":6,
     "dim_feedforward":2048,
     "dropout_rate":0.1,
-    "vocab_size":"",
-    "n_segments":2,
+
     "n_s":2,
     "H":8,
     "H_c":8,
     "tim_layers_pos":"",
-    "config_file":"",
-    "task" : "",
-    "pretrain_file":"",
-    "mode" : "train",
+
+    "model_file" : "",
+    "save_dir":"/content/bert_pretrain",
+    "log_dir":"/content/bert_pretrain/runs",
+
+    "pretrain":"False",
+    "data_parallel":"False",
     "seed": 3431,
     "batch_size": 32,
-    "lr": 1e-4,
     "n_epochs": 2,
+    
+    "max_pred":20,
+    "mask_prob":0.15,
+    "mode" : "train",
+    "pretrain_file":"",
+    "task" : "",
+    
+    
+    "lr": 1e-4,
     "warmup": 0.1,
     "save_steps": 10000,
-    "total_steps": 1000000
+    "total_steps": 1000000,
+
+    "config_file":"",
 }

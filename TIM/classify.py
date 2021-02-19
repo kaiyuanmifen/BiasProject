@@ -8,7 +8,6 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from tensorboardX import SummaryWriter
-import json
 import os
 import argparse 
 
@@ -20,27 +19,24 @@ from tokenization2 import BertTokenizer
 from tokenization3 import build_tokenizer
 from dataset import Tokenizing, AddSpecialTokensWithTruncation, TokenIndexing, dataset_class
 from optim import optim4GPU
-from params import get_parser
-from type import config_dic
+from params import get_parser, from_config_file
 
 def main(params):
-
-    set_seeds(params.seed)
 
     option = 1
     if option == 1 :
         tokenizer = FullTokenizer(vocab_file=params.vocab_file, do_lower_case=True)
     if option == 2 :
-        name="BertWordPieceTokenizer3"
-        path="data/BertWordPieceTokenizer"
-        train_path="bias_corpus3.txt"
+        name="bias/data/BertWordPieceTokenizer3"
+        path="bias/data/BertWordPieceTokenizer"
+        train_path="bias/data/bias_corpus3.txt"
         vocab_size = 10000
         st = special_tokens
         min_frequency=2
         tokenizer = BertTokenizer(params.max_len, path, name, train_path, vocab_size, min_frequency, st)
     if option == 3 :
-        tokenizer_path= "data/tfds.SubwordTextEncoder_vocab3.txt"
-        with open("bias_corpus3.txt", "r") as f:
+        tokenizer_path= "bias/data/tfds.SubwordTextEncoder_vocab3.txt"
+        with open("bias/data/bias_corpus3.txt", "r") as f:
             corpus = f.readlines()
         vocab_size = 10000
         st = special_tokens
@@ -52,6 +48,15 @@ def main(params):
                 TokenIndexing(tokenizer.convert_tokens_to_ids,
                               TaskDataset.labels, params.max_len)]
 
+    dataset = TaskDataset(params.data_file, pipeline)
+    data_iter = DataLoader(dataset, batch_size=params.batch_size, shuffle=True)
+
+    i = 0
+    for _ in data_iter :
+        i += 1
+    num_data = i*params.batch_size 
+    assert num_data != 0
+    params.total_steps = params.n_epochs*(num_data/params.batch_size)
     dataset = TaskDataset(params.data_file, pipeline)
     data_iter = DataLoader(dataset, batch_size=params.batch_size, shuffle=True)
 
@@ -106,34 +111,6 @@ def main(params):
 if __name__ == '__main__':
     
     params = get_parser().parse_args()
-        
-    torch.manual_seed(params.seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-
-    if os.path.isfile(params.config_file):
-        with open(params.config_file) as json_data:
-            data_dict = json.load(json_data)
-            for key, value in data_dict.items():
-                conf = config_dic[key]   
-                if value == "False":
-                    value = False
-                elif value == "True" :
-                    value = True
-                
-                """
-                try :
-                    setattr(params, key, conf[0](value))
-                except :
-                    setattr(params, key, value)
-                """
-                # Allow to overwrite the parameters of the json configuration file.
-                try :
-                    value = conf[0](value)
-                except :
-                    pass
-                
-                if getattr(params, key, conf[1]) == conf[1] :
-                    setattr(params, key, value)
-
+    set_seeds(params.seed)
+    params = from_config_file(params)
     main(params)

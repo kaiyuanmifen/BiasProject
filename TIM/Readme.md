@@ -46,12 +46,10 @@ mkdir $SAVE_DIR/runs
 
 python pretrain.py --config_file config/pretrain_config.json --data_file $DATA_FILE --vocab_file $VOCAB_PATH --save_dir $SAVE_DIR 
 ```
-See [pretrain.py]() and [config/pretrain_config.json]() about the others parameters
+See [params.py](./params.py) and [config/pretrain_config.json](./config/pretrain_config.json) about the others parameters
 
 ### Fine-tuning (MRPC, sentiment_analysis, MNLI) Classifier with Pre-trained Transformer
-Download pretrained model [BERT-Base, Uncased](https://storage.googleapis.com/bert_models/2018_10_18/uncased_L-12_H-768_A-12.zip) and
-[GLUE Benchmark Datasets]( https://github.com/nyu-mll/GLUE-baselines) 
-before fine-tuning.
+ 
 * make sure that "total_steps" in train_mrpc.json is n_epochs*(num_data/batch_size)
 ```bash
 TASK=sentiment_analysis
@@ -66,7 +64,8 @@ mkdir $SAVE_DIR/runs
 
 python classify.py --config_file config/classif_config.json --mode $MODE --task $TASK --data_file $DATA_FILE --vocab_file $VOCAB_PATH --save_dir $SAVE_DIR --pretrain_file $PRETRAIN_FILE
 ```
-See [classify.py]() and [config/classif_config.json]() about the others parameters
+See [params.py](./params.py) and [config/classif_config.json](.config/classif_config.json) about the others parameters
+
 ### Evaluation of the trained Classifier
 ```bash
 TASK=sentiment_analysis
@@ -75,11 +74,9 @@ VOCAB_PATH=data/vocab.txt
 SAVE_DIR=/content/bert_classification
 MODE=eval
 PRETRAIN_FILE=/content/bert_pretrain/model_steps_5.pt
+MODEL_FILE=/content/bert_classification/model_steps_1898.pt
 
-mkdir $SAVE_DIR
-mkdir $SAVE_DIR/runs
-
-python classify.py --config_file config/classif_config.json --mode $MODE --task $TASK --data_file $DATA_FILE --vocab_file $VOCAB_PATH --save_dir $SAVE_DIR --pretrain_file $PRETRAIN_FILE
+python classify.py --model_file $MODEL_FILE --config_file config/classif_config.json --mode $MODE --task $TASK --data_file $DATA_FILE --vocab_file $VOCAB_PATH --save_dir $SAVE_DIR --pretrain_file $PRETRAIN_FILE
 ```
 
 

@@ -22,6 +22,8 @@ def set_seeds(seed):
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 def get_device():
     "get device (CPU or GPU)"
@@ -30,6 +32,7 @@ def get_device():
     print("%s (%d GPUs)" % (device, n_gpu))
     return device
 
+"""
 def split_last(x, shape):
     "split the last dimension to given shape"
     shape = list(shape)
@@ -43,6 +46,7 @@ def merge_last(x, n_dims):
     s = x.size()
     assert n_dims > 1 and n_dims < len(s)
     return x.view(*s[:-n_dims], -1)
+"""
 
 def find_sublist(haystack, needle):
     """Return the index at which the sequence needle appears in the

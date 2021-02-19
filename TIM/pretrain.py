@@ -4,7 +4,6 @@ import torch
 import torch.nn as nn
 
 from tensorboardX import SummaryWriter
-import json
 import os
 
 from train import Trainer
@@ -15,9 +14,8 @@ from tokenization2 import BertTokenizer
 from tokenization3 import build_tokenizer
 from dataset import Preprocess4Pretrain, SentPairDataLoader, SentPairDataLoader
 from optim import optim4GPU
-from params import get_parser
-from type import config_dic
-
+from params import get_parser, from_config_file
+ 
 def main(params):
     
     set_seeds(params.seed)
@@ -26,16 +24,16 @@ def main(params):
     if option == 1 :
         tokenizer = FullTokenizer(vocab_file=params.vocab_file, do_lower_case=True)
     if option == 2 :
-        name="BertWordPieceTokenizer3"
-        path="data/BertWordPieceTokenizer"
-        train_path="bias_corpus3.txt"
+        name="bias/data/BertWordPieceTokenizer3"
+        path="bias/data/BertWordPieceTokenizer"
+        train_path="bias/data/bias_corpus3.txt"
         vocab_size = 10000
         st = special_tokens
         min_frequency=2
         tokenizer = BertTokenizer(params.max_len, path, name, train_path, vocab_size, min_frequency, st)
     if option == 3 :
-        tokenizer_path= "data/tfds.SubwordTextEncoder_vocab3.txt"
-        with open("bias_corpus3.txt", "r") as f:
+        tokenizer_path= "bias/data/tfds.SubwordTextEncoder_vocab3.txt"
+        with open("bias/data/bias_corpus3.txt", "r") as f:
             corpus = f.readlines()
         vocab_size = 10000
         st = special_tokens
@@ -53,7 +51,20 @@ def main(params):
                                    tokenize,
                                    params.max_len,
                                    pipeline=pipeline)
-    #assert len(data_iter) != 0
+
+    i = 0
+    for _ in data_iter :
+        i += 1
+    num_data = i*params.batch_size 
+    assert num_data != 0
+    params.total_steps = params.n_epochs*(num_data/params.batch_size)
+    data_iter = SentPairDataLoader(params.data_file,
+                                   params.batch_size,
+                                   tokenize,
+                                   params.max_len,
+                                   pipeline=pipeline)
+    
+    
     vocab_size = max(tokenizer.vocab.values()) 
 
     tim_layers_pos = None
@@ -91,6 +102,20 @@ def main(params):
         loss_lm = criterion1(logits_lm.transpose(1, 2), masked_ids) # for masked LM
         loss_lm = (loss_lm*masked_weights.float()).mean()
         loss_clsf = criterion2(logits_clsf, is_next) # for sentence classification
+
+        """
+        _, label_pred = logits_lm.max(1)
+        result = (label_pred == masked_ids).float() #.cpu().numpy()
+        accuracy1 = result.mean()
+        print(accuracy1)
+        """
+        """
+        _, label_pred = logits_clsf.max(1)
+        result = (label_pred == is_next).float() #.cpu().numpy()
+        accuracy2 = result.mean()
+        print(accuracy2)
+        """
+        
         writer.add_scalars('data/scalar_group',
                            {'loss_lm': loss_lm.item(),
                             'loss_clsf': loss_clsf.item(),
@@ -106,34 +131,6 @@ def main(params):
 if __name__ == '__main__':
     
     params = get_parser().parse_args()
-
-    torch.manual_seed(params.seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-
-    if os.path.isfile(params.config_file):
-        with open(params.config_file) as json_data:
-            data_dict = json.load(json_data)
-            for key, value in data_dict.items():
-                conf = config_dic[key]   
-                if value == "False":
-                    value = False
-                elif value == "True" :
-                    value = True
-                
-                """
-                try :
-                    setattr(params, key, conf[0](value))
-                except :
-                    setattr(params, key, value)
-                """
-                # Allow to overwrite the parameters of the json configuration file.
-                try :
-                    value = conf[0](value)
-                except :
-                    pass
-                
-                if getattr(params, key, conf[1]) == conf[1] :
-                    setattr(params, key, value)
-
+    set_seeds(params.seed)
+    params = from_config_file(params)
     main(params)

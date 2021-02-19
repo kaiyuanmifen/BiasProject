@@ -1,6 +1,3 @@
-# Copyright 2018 Dong-Hyun Lee, Kakao Brain.
-# (Strongly inspired by original Google BERT code and Hugging Face's code)
-
 """ Transformer Model Classes & Config Class """
 
 import math
@@ -20,6 +17,8 @@ from torch.nn import Module, ModuleList, Dropout, Linear, LayerNorm, Sequential
 #from torch.nn import MultiheadAttention
 from torch.nn.init import xavier_uniform_
 from torch.autograd import Variable
+
+neg_inf = -1e8 # float("-inf")
 
 def custom_rand(shape : tuple, a = 0, b = 1., random_seed = 0, requires_grad = False) :
     """generate a random tensor of shape `shape` fill with number in range (a, b)"""
@@ -116,7 +115,7 @@ class ScaledDotProductAttention(nn.Module):
         #neg_inf = -np.inf
 
         # https://github.com/pytorch/fairseq/blob/master/fairseq/modules/transformer_layer.py#L122
-        neg_inf = -1e8
+        #neg_inf = -1e8 # see at the beginning of the file
         # anything in original attn_mask = 1, becomes -1e8
         # anything in original attn_mask = 0, becomes 0
         # Note that we cannot use -inf here, because at some edge cases,
@@ -155,12 +154,20 @@ class ScaledDotProductAttention(nn.Module):
                 attn = attn.masked_fill(attn_mask.bool(), neg_inf) # (batch_size, len_q, len_k)
                 #attn_weights.masked_fill_(attn_mask == 0, neg_inf)
             else: # float
+                #attn_mask = neg_inf * attn_mask
                 attn += attn_mask
                 #raise NotImplementedError("")
 
         # https://github.com/pytorch/pytorch/blob/master/torch/nn/functional.py#L4739
         # Masking to ignore padding (query side)
         if key_padding_mask is not None:
+            assert (
+                key_padding_mask.dtype == torch.float32
+                or key_padding_mask.dtype == torch.float64
+                or key_padding_mask.dtype == torch.float16
+                or key_padding_mask.dtype == torch.uint8
+                or key_padding_mask.dtype == torch.bool
+            ), "Only float, byte, and bool types are supported for key_padding_mask, not {}".format(key_padding_mask.dtype)
             # convert ByteTensor key_padding_mask to bool
             if key_padding_mask.dtype == torch.uint8:
                 warnings.warn(
@@ -173,11 +180,18 @@ class ScaledDotProductAttention(nn.Module):
 
             if key_padding_mask.dim() == 2: # (batch_size, len_q) 
                 key_padding_mask = key_padding_mask.unsqueeze(-1) # (batch_size, len_q, 1)
+            elif key_padding_mask.dim() == 3:
+                if key_padding_mask.size(2) != 1 : # ?? (batch_size, len_q, 1)
+                    raise RuntimeError("The size of the 3D key_padding_mask is not correct.")
+                    #raise NotImplementedError("3D")
+            else:
+                raise RuntimeError("key_padding_mask's dimension {} is not supported".format(key_padding_mask.dim()))
 
             if key_padding_mask.dtype == torch.bool:
                 attn = attn.masked_fill(key_padding_mask, neg_inf) # (batch_size, len_q, len_k)
                 #attn_weights.masked_fill_(key_padding_mask == 0, neg_inf)
             else: # float
+                #key_padding_mask = neg_inf * key_padding_mask
                 attn += key_padding_mask
                 #raise NotImplementedError("")
 
@@ -789,7 +803,8 @@ class BertModel4Pretrain(nn.Module):
         masked_pos : (batch_size, input_seq_len)  
         """
         src_mask = None
-        src_key_padding_mask = input_mask
+        src_key_padding_mask = neg_inf*(1.0 - input_mask)
+        src_key_padding_mask = src_key_padding_mask.to(torch.float64)
         h, _ = self.transformer(input_ids, segment_ids, src_mask, src_key_padding_mask)
         # h : (batch_size, input_seq_len, d_model)
         # [CLS] : The final hidden state corresponding to this token is used as the aggregate 
@@ -819,7 +834,8 @@ class BertClassifier(nn.Module):
 
     def forward(self, input_ids, segment_ids, input_mask):
         src_mask = None
-        src_key_padding_mask = input_mask
+        src_key_padding_mask = neg_inf*(1.0 - input_mask)
+        src_key_padding_mask = src_key_padding_mask.to(torch.float64)
         h, _ = self.transformer(input_ids, segment_ids, src_mask, src_key_padding_mask)
         # h : (batch_size, input_seq_len, d_model)
         # [CLS] : The final hidden state corresponding to this token is used as the aggregate 

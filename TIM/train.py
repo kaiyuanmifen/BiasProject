@@ -26,7 +26,7 @@ class Trainer(object):
         self.model.train() # train mode
         self.load(model_file, pretrain_file)
         model = self.model.to(self.device)
-        if data_parallel: # use Data Parallelism with Multi-GPU
+        if data_parallel and torch.cuda.device_count() > 1 : # use Data Parallelism with Multi-GPU
             model = nn.DataParallel(model)
 
         global_step = 0 # global iteration steps regardless of epochs
@@ -62,7 +62,7 @@ class Trainer(object):
         self.model.eval() # evaluation mode
         self.load(model_file, None)
         model = self.model.to(self.device)
-        if data_parallel: # use Data Parallelism with Multi-GPU
+        if data_parallel and torch.cuda.device_count() > 1 : # use Data Parallelism with Multi-GPU
             model = nn.DataParallel(model)
 
         results = [] # prediction results
@@ -78,21 +78,21 @@ class Trainer(object):
 
     def load(self, model_file, pretrain_file):
         """ load saved model or pretrained transformer (a part of model) """
-        if model_file:
+        if model_file and os.path.isfile(model_file):
             print('Loading the model from', model_file)
             self.model.load_state_dict(torch.load(model_file))
 
-        elif pretrain_file: # use pretrained transformer
+        elif pretrain_file and os.path.isfile(pretrain_file): # use pretrained transformer
             print('Loading the pretrained model from', pretrain_file)
             if pretrain_file.endswith('.ckpt'): # checkpoint file in tensorflow
                 checkpoint.load_model(self.model.transformer, pretrain_file)
             elif pretrain_file.endswith('.pt'): # pretrain model file in pytorch
                 self.model.transformer.load_state_dict(
-                    {key[12:]: value
+                    {key[12:]: # remove 'transformer.' (in 'transformer.embedding.norm.bias' for example)
+                        value
                         for key, value in torch.load(pretrain_file).items()
-                        if key.startswith('transformer')}
-                ) # load only transformer parts
-
+                        if key.startswith('transformer')} # load only transformer parts
+                ) 
 
     def save(self, i):
         """ save current model """
