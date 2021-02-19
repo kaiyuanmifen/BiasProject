@@ -3,11 +3,16 @@
 
 from random import randint, shuffle
 from random import random as rand
+import pandas as pd
+import fire
+import itertools
+import csv
 import fire
 
 import torch
 import torch.nn as nn
 from tensorboardX import SummaryWriter
+from torch.utils.data import Dataset
 
 import models
 import optim
@@ -157,14 +162,6 @@ class Preprocess4Pretrain(Pipeline):
 
 ############################### [2] ################################
 """ Fine-tuning on A Classification Task with pretrained Transformer """
-import itertools
-import csv
-import fire
-
-import torch
-import torch.nn as nn
-from torch.utils.data import Dataset
-
 class CsvDataset(Dataset):
     """ Dataset Class for CSV file """
     labels = None
@@ -194,16 +191,23 @@ class CsvDataset(Dataset):
 
 
 class BiasClassificationDataset(CsvDataset):
-    label = ("0", "1", "2", "3", "4")
+    """ Dataset class for Bias Classification"""
+    labels = ("0", "1", "2", "3", "4", "5")
     def __init__(self, file, pipeline=[]):
-        super().__init__(file, pipeline)
+        data = []    
+        for instance in self.get_instances(pd.read_csv(file)): # instance : tuple of fields
+                for proc in pipeline: # a bunch of pre-processing
+                    instance = proc(instance)
+                data.append(instance)
+        self.tensors = [torch.tensor(x, dtype=torch.long) for x in zip(*data)]
 
-    def get_instances(self, lines):
-        for line in itertools.islice(lines, 1, None): # skip header
-            tmp = line[0].split(',') # text, label1, label2, label3, conf1, conf2, conf3
+    def get_instances(self, df):
+        columns = list(df.columns[1:]) # excapt "'Unnamed: 0'"
+        for row in df.iterrows() : 
+            line = [row[1][col] for col in columns] # text, label1, label2, label3, conf1, conf2, conf3
             # todo : ask Yoshua and Dianbo
-            label = sum([ int(t) for t in  tmp[1:3] ])//3
-            yield label, tmp[0], "" # label, text_a, text_b
+            label = sum([ label * conf for label, conf in  zip(line[1:4], line[4:7]) ])// sum(line[4:7])
+            yield str(label), line[0], "" # label, text_a, text_b
 
 class SenAnDataset(CsvDataset):
     """ Dataset class for Sentiment Analysis"""

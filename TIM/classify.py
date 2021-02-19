@@ -1,8 +1,5 @@
 """ Fine-tuning on A Classification Task with pretrained Transformer """
 
-#pretrain_file='../uncased_L-12_H-768_A-12/bert_model.ckpt',
-#pretrain_file='../exp/bert/pretrain_100k/model_epoch_3_steps_9732.pt',
-
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -51,10 +48,14 @@ def main(params):
     dataset = TaskDataset(params.data_file, pipeline)
     data_iter = DataLoader(dataset, batch_size=params.batch_size, shuffle=True)
 
+    """
     i = 0
     for _ in data_iter :
         i += 1
+    """
+    i = len(data_iter)
     num_data = i*params.batch_size 
+    print("======= num_data : %d ======="%num_data)
     assert num_data != 0
     params.total_steps = params.n_epochs*(num_data/params.batch_size)
     dataset = TaskDataset(params.data_file, pipeline)

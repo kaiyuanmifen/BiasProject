@@ -40,5 +40,5 @@
     "save_steps": 10000,
     "total_steps": 1000000,
 
-    "config_file":"",
+    "config_file":""
 }

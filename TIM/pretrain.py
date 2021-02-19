@@ -56,6 +56,7 @@ def main(params):
     for _ in data_iter :
         i += 1
     num_data = i*params.batch_size 
+    print("======= num_data : %d ======="%num_data)
     assert num_data != 0
     params.total_steps = params.n_epochs*(num_data/params.batch_size)
     data_iter = SentPairDataLoader(params.data_file,
@@ -115,7 +116,7 @@ def main(params):
         accuracy2 = result.mean()
         print(accuracy2)
         """
-        
+
         writer.add_scalars('data/scalar_group',
                            {'loss_lm': loss_lm.item(),
                             'loss_clsf': loss_clsf.item(),
