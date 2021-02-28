@@ -1,8 +1,9 @@
 {
     "vocab_file":"",
-    "data_file":"",
-    "max_len":512,
-    "vocab_size":"",
+    "train_data_file":"",
+    "val_data_file":"",
+    "max_len":100,
+    "max_vocab":"-1",
     "n_segments":2,
 
     "d_model":512,
@@ -18,11 +19,7 @@
     "H_c":8,
     "tim_layers_pos":"",
 
-    "model_file" : "",
-    "save_dir":"/content/bert_pretrain",
-    "log_dir":"/content/bert_pretrain/runs",
-
-    "pretrain":"False",
+    "pretrain":"True",
     "data_parallel":"False",
     "seed": 3431,
     "batch_size": 32,
@@ -30,15 +27,28 @@
     
     "max_pred":20,
     "mask_prob":0.15,
-    "mode" : "train",
     "pretrain_file":"",
     "task" : "",
     
     
     "lr": 1e-4,
     "warmup": 0.1,
-    "save_steps": 10000,
-    "total_steps": 1000000,
 
-    "config_file":""
+    "config_file":"",
+
+    "stopping_criterion":"val_mlm_ppl,10", 
+    "validation_metrics":"val_mlm_ppl", 
+    "train_n_samples":"-1",
+    "val_n_samples":"-1",
+    "eval_only":"False",
+
+    "shuffle":"False",
+
+    "exp_name":"pretrain", 
+    "exp_id":"demo", 
+    "dump_path":"/content/bert_pretrain",
+    "reload_transformer":"",
+    "reload_checkpoint":"",
+
+    "reload_model":""
 }

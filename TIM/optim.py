@@ -1,4 +1,5 @@
 """ a slightly modified version of Hugging Face's BERTAdam class """
+# https://github.com/Meelfy/pytorch_pretrained_BERT/blob/master/pytorch_pretrained_bert/optimization.py
 
 import math
 import torch

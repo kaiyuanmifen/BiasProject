@@ -2,16 +2,16 @@
 """ Pretrain transformer with Masked LM and Sentence Classification """
 
 from random import randint, shuffle
+import random
 from random import random as rand
 import pandas as pd
-import fire
+#import fire
 import itertools
 import csv
-import fire
 
 import torch
 import torch.nn as nn
-from tensorboardX import SummaryWriter
+#from tensorboardX import SummaryWriter
 from torch.utils.data import Dataset
 
 import models
@@ -37,7 +37,8 @@ def seek_random_offset(f, back_margin=2000):
 
 class SentPairDataLoader():
     """ Load sentence pair (sequential or random order) from corpus """
-    def __init__(self, file, batch_size, tokenize, max_len, short_sampling_prob=0.1, pipeline=[]):
+    def __init__(self, file, batch_size, tokenize, max_len, short_sampling_prob=0.1, pipeline=[],
+                n_samples = float("inf")):
         super().__init__()
         self.f_pos = open(file, "r", encoding='utf-8', errors='ignore') # for a positive sample
         self.f_neg = open(file, "r", encoding='utf-8', errors='ignore') # for a negative (random) sample
@@ -46,6 +47,7 @@ class SentPairDataLoader():
         self.short_sampling_prob = short_sampling_prob
         self.pipeline = pipeline
         self.batch_size = batch_size
+        self.n_samples = n_samples
 
     def read_tokens(self, f, length, discard_last_and_restart=True):
         """ Read tokens from file pointer with limited length """
@@ -64,7 +66,9 @@ class SentPairDataLoader():
         return tokens
 
     def __iter__(self): # iterator to load data
-        while True:
+        N = 0
+        flag = True
+        while flag:
             batch = []
             for i in range(self.batch_size):
                 # sampling length of each tokens_a and tokens_b
@@ -90,6 +94,8 @@ class SentPairDataLoader():
 
                 batch.append(instance)
 
+            N += self.batch_size
+            flag = N < self.n_samples
             # To Tensor
             batch_tensors = [torch.tensor(x, dtype=torch.long) for x in zip(*batch)]
             yield batch_tensors
@@ -111,6 +117,11 @@ class Preprocess4Pretrain(Pipeline):
         self.vocab_words = vocab_words # vocabulary (sub)words
         self.indexer = indexer # function from token to token index
         self.max_len = max_len
+
+        self.word_mask_keep_rand="0.8,0.1,0.1"
+        self.word_mask_keep_rand=[float(i) for i in self.word_mask_keep_rand.split(",")]
+        assert len(self.word_mask_keep_rand) == 3
+        assert sum(self.word_mask_keep_rand) == 1.
 
     def __call__(self, instance):
         is_next, tokens_a, tokens_b = instance
@@ -134,8 +145,9 @@ class Preprocess4Pretrain(Pipeline):
         for pos in cand_pos[:n_pred]:
             masked_tokens.append(tokens[pos])
             masked_pos.append(pos)
-            if rand() < 0.8: # 80%
+            if rand() < self.word_mask_keep_rand[0]: # 80%
                 tokens[pos] = '[MASK]'
+            #elif rand() < self.word_mask_keep_rand[0] + self.word_mask_keep_rand[1]: # 09 = 0.8 + 0.1 for ex.
             elif rand() < 0.5: # 10%
                 tokens[pos] = get_random_word(self.vocab_words)
         # when n_pred < max_pred, we only calculate loss within n_pred
@@ -165,12 +177,17 @@ class Preprocess4Pretrain(Pipeline):
 class CsvDataset(Dataset):
     """ Dataset Class for CSV file """
     labels = None
-    def __init__(self, file, pipeline=[]): # cvs file and pipeline object
+    def __init__(self, file, pipeline=[], n_samples = None, shuffle=False): # cvs file and pipeline object
+        self.n_samples = n_samples
         Dataset.__init__(self)
         data = []
         with open(file, "r") as f:
             # list of splitted lines : line is also list
             lines = csv.reader(f, delimiter='\t', quotechar=None)
+            lines = list(lines)
+            if shuffle:
+                random.shuffle(lines)
+            lines = lines[:self.n_samples]
             for instance in self.get_instances(lines): # instance : tuple of fields
                 for proc in pipeline: # a bunch of pre-processing
                     instance = proc(instance)
@@ -193,7 +210,9 @@ class CsvDataset(Dataset):
 class BiasClassificationDataset(CsvDataset):
     """ Dataset class for Bias Classification"""
     labels = ("0", "1", "2", "3", "4", "5")
-    def __init__(self, file, pipeline=[]):
+    def __init__(self, file, pipeline=[], n_samples = None, shuffle=False):
+        self.n_samples = n_samples
+        self.shuffle = shuffle
         data = []    
         for instance in self.get_instances(pd.read_csv(file)): # instance : tuple of fields
                 for proc in pipeline: # a bunch of pre-processing
@@ -203,7 +222,10 @@ class BiasClassificationDataset(CsvDataset):
 
     def get_instances(self, df):
         columns = list(df.columns[1:]) # excapt "'Unnamed: 0'"
-        for row in df.iterrows() : 
+        rows = df.iterrows()
+        if self.shuffle :
+            random.shuffle(rows)
+        for row in rows : 
             line = [row[1][col] for col in columns] # text, label1, label2, label3, conf1, conf2, conf3
             # todo : ask Yoshua and Dianbo
             label = sum([ label * conf for label, conf in  zip(line[1:4], line[4:7]) ])// sum(line[4:7])
@@ -212,8 +234,8 @@ class BiasClassificationDataset(CsvDataset):
 class SenAnDataset(CsvDataset):
     """ Dataset class for Sentiment Analysis"""
     labels = ("0", "1", "2") # label names
-    def __init__(self, file, pipeline=[]):
-        super().__init__(file, pipeline)
+    def __init__(self, file, pipeline=[], n_samples = None, shuffle=False):
+        super().__init__(file, pipeline, n_samples, shuffle)
 
     def get_instances(self, lines):
         for line in itertools.islice(lines, 1, None): # skip header
@@ -233,8 +255,8 @@ class SenAnDataset(CsvDataset):
 class MRPC(CsvDataset):
     """ Dataset class for MRPC """
     labels = ("0", "1") # label names
-    def __init__(self, file, pipeline=[]):
-        super().__init__(file, pipeline)
+    def __init__(self, file, pipeline=[], n_samples=None, shuffle=False):
+        super().__init__(file, pipeline, n_samples, shuffle)
 
     def get_instances(self, lines):
         for line in itertools.islice(lines, 1, None): # skip header
@@ -244,8 +266,8 @@ class MRPC(CsvDataset):
 class MNLI(CsvDataset):
     """ Dataset class for MNLI """
     labels = ("contradiction", "entailment", "neutral") # label names
-    def __init__(self, file, pipeline=[]):
-        super().__init__(file, pipeline)
+    def __init__(self, file, pipeline=[], n_samples=None, shuffle=False):
+        super().__init__(file, pipeline, n_samples, shuffle)
 
     def get_instances(self, lines):
         for line in itertools.islice(lines, 1, None): # skip header

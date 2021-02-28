@@ -1,4 +1,5 @@
 """ Tokenization classes (same code as Google BERT code with some modifications) """
+# https://github.com/Meelfy/pytorch_pretrained_BERT/blob/master/pytorch_pretrained_bert/tokenization.py
 
 from __future__ import absolute_import
 from __future__ import division

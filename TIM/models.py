@@ -776,7 +776,30 @@ class Transformer(Module):
 
 ## BertModel for Pretrain
 class BertModel4Pretrain(nn.Module):
-    "Bert Model for Pretrain : Masked LM and next sentence classification"
+    """BERT model with pre-training heads.
+    This module comprises the BERT model followed by the two pre-training heads:
+        - the masked language modeling head, and
+        - the next sentence classification head.
+    Params:
+        `transformer` : BERT model 
+    Inputs:
+        `input_ids`: a torch.LongTensor of shape [batch_size, sequence_length]
+            with the word token indices in the vocabulary(see the tokens preprocessing logic in the scripts
+            `extract_features.py`, `run_classifier.py` and `run_squad.py`)
+        `segment_ids`: an optional torch.LongTensor of shape [batch_size, sequence_length] with the token
+            types indices selected in [0, 1]. Type 0 corresponds to a `sentence A` and type 1 corresponds to
+            a `sentence B` token (see BERT paper for more details).
+        `input_mask`: an optional torch.LongTensor of shape [batch_size, sequence_length] with indices
+            selected in [0, 1]. It's a mask to be used if the input sequence length is smaller than the max
+            input sequence length in the current batch. It's the mask that we typically use for attention when
+            a batch has varying length sentences.
+        `masked_pos` : todo
+    Outputs:
+        Outputs a tuple comprising
+            - the masked language modeling logits of shape [batch_size, sequence_length, vocab_size], and
+            - the next sentence classification logits of shape [batch_size, 2].
+    ```
+    """
     def __init__(self, transformer : Transformer):
         super().__init__()
         self.transformer = transformer
@@ -803,8 +826,12 @@ class BertModel4Pretrain(nn.Module):
         masked_pos : (batch_size, input_seq_len)  
         """
         src_mask = None
-        src_key_padding_mask = neg_inf*(1.0 - input_mask)
-        src_key_padding_mask = src_key_padding_mask.to(torch.float64)
+        # 1
+        #src_key_padding_mask = input_mask.to(torch.uint8)
+        # or 2
+        #src_key_padding_mask = (1.0 - input_mask).to(torch.bool)
+        # or 3
+        src_key_padding_mask = neg_inf*(1.0 - input_mask).to(torch.float64)
         h, _ = self.transformer(input_ids, segment_ids, src_mask, src_key_padding_mask)
         # h : (batch_size, input_seq_len, d_model)
         # [CLS] : The final hidden state corresponding to this token is used as the aggregate 
@@ -822,7 +849,27 @@ class BertModel4Pretrain(nn.Module):
 
 ## Bert for classification
 class BertClassifier(nn.Module):
-    """ Classifier with Transformer """
+    """BERT model for token-level classification.
+    This module is composed of the BERT model with a linear layers on top of
+    the full hidden state of the last layer.
+    Params:
+        `transformer` : BERT model 
+        `n_labels` : the number of classes for the classifier 
+        `dropout` : dropout rate (default = 0.1)
+    Inputs:
+        `input_ids`: a torch.LongTensor of shape [batch_size, sequence_length]
+            with the word token indices in the vocabulary
+        `segment_ids`: a torch.LongTensor of shape [batch_size, sequence_length] with the token
+            types indices selected in [0, 1]. Type 0 corresponds to a `sentence A` and type 1 corresponds to
+            a `sentence B` token (see BERT paper for more details).
+        `input_mask`: a torch.LongTensor of shape [batch_size, sequence_length] with indices
+            selected in [0, 1]. It's a mask to be used if the input sequence length is smaller than the max
+            input sequence length in the current batch. It's the mask that we typically use for attention when
+            a batch has varying length sentences.
+    Outputs:
+        Outputs the classification logits of shape [batch_size, num_labels].
+    ```
+    """
     def __init__(self, transformer : Transformer, n_labels, dropout=0.1):
         super().__init__()
         self.transformer = transformer
@@ -834,8 +881,12 @@ class BertClassifier(nn.Module):
 
     def forward(self, input_ids, segment_ids, input_mask):
         src_mask = None
-        src_key_padding_mask = neg_inf*(1.0 - input_mask)
-        src_key_padding_mask = src_key_padding_mask.to(torch.float64)
+        # 1
+        #src_key_padding_mask = input_mask.to(torch.uint8)
+        # or 2
+        #src_key_padding_mask = (1.0 - input_mask).to(torch.bool)
+        # or 3
+        src_key_padding_mask = neg_inf*(1.0 - input_mask).to(torch.float64)
         h, _ = self.transformer(input_ids, segment_ids, src_mask, src_key_padding_mask)
         # h : (batch_size, input_seq_len, d_model)
         # [CLS] : The final hidden state corresponding to this token is used as the aggregate 
