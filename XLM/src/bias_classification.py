@@ -48,6 +48,7 @@ class GRU(nn.Module):
                             bidirectional = params.bidirectional, batch_first = True,
                             dropout = 0 if params.n_layers < 2 else params.dropout)
     def forward(self, x):
+        # x : (input_seq_len, batch_size, d_model)
         x = x.transpose(0, 1) # (batch_size, input_seq_len, d_model)
         _, x = self.rnn(self.drop(x)) # [n layers * n directions, batch size, emb dim]
         if self.rnn.bidirectional:
@@ -161,7 +162,11 @@ class BertClassifier(nn.Module):
             setattr(params, name, getattr(model_params, name))
 
         # build dictionary / build encoder / build decoder / reload weights
-        dico = Dictionary(reloaded['dico_id2word'], reloaded['dico_word2id'], reloaded['dico_counts'], rest=dico_rest)
+        try :
+            dico = Dictionary(reloaded['dico_id2word'], reloaded['dico_word2id'], reloaded['dico_counts'], rest=dico_rest)
+        except AssertionError : # assert all(self.id2word[self.rest + i] == SPECIAL_WORD % i for i in range(SPECIAL_WORDS))
+            dico = Dictionary(reloaded['dico_id2word'], reloaded['dico_word2id'], reloaded['dico_counts'])
+            
         model = TransformerModel(model_params, dico, is_encoder=True, with_output=True).to(params.device)
         state_dict = reloaded['model']
         # handle models from multi-GPU checkpoints
@@ -289,7 +294,10 @@ class BiasClassificationDataset(Dataset):
             self.data = data
         
     def __len__(self):
-        return self.n_samples // self.batch_size
+        if self.in_memory :
+            return self.n_samples // self.batch_size
+        else :
+            return self.n_samples
 
     def __getitem__(self, index):
         if not self.in_memory :
@@ -404,7 +412,12 @@ def load_dataset(params, logger, dico) :
 """ Training Class"""
 #possib = ["%s_%s_%s"%(i, j, k) for i, j, k in itertools.product(["train", "val"], ["mlm", "nsp"], ["ppl", "acc", "loss"])]
 possib = []
-possib.extend(["%s_%s"%(i, j) for i, j in itertools.product(["train", "val"], ["f1_score_weighted", "acc", "loss"])])
+possib.extend(["%s_%s"%(i, j) for i, j in itertools.product(["train", "val"], ["f1_score_weighted", "acc", "loss", "IoU_weighted"])])
+tmp = []
+for k in range(1, len(label_dict)+1):
+    tmp.extend( ["%s_%s"%(i, j) for i, j in itertools.product(["top%d"%k], possib)])
+possib.extend(tmp)
+
 tmp_type = lambda name : "ppl" in name or "loss" in name
 
 class Trainer(object):
@@ -724,7 +737,7 @@ class Trainer(object):
         for k in self.stats.keys():
             #if type(self.stats[k]) is list:
             #    del self.stats[k][:]
-            if ("loss" in k or "acc" in k or 'f1_score' in k) and (not "avg" in k) :
+            if ("loss" in k or "acc" in k or 'f1_score' in k or "IoU" in k) and (not "avg" in k) :
                 self.stats[k] = []
 
         # learning rates
@@ -769,7 +782,8 @@ class Trainer(object):
             self.stats['progress'] = min(int(((i+1)/self.params.train_num_step)*100), 100) 
 
             for name in stats.keys() :
-                if "loss" in name or 'acc' in name or "f1_score" in name:
+                if ("loss" in name or 'acc' in name or "f1_score" in name or "IoU" in name) \
+                and not "top" in name:
                     self.stats[name] = self.stats.get(name, []) + [stats[name]]
 
             self.iter()

@@ -5,7 +5,7 @@ import torch.nn.functional as F
 #from optim import ScheduledOptim
 import os
 import numpy as np
-from sklearn.metrics import f1_score, classification_report, accuracy_score
+from sklearn.metrics import f1_score, accuracy_score, jaccard_score, classification_report
 
 from src.slurm import init_signal_handler, init_distributed_mode
 from src.utils import initialize_exp, set_seeds
@@ -23,7 +23,11 @@ def get_acc(pred, label):
 
 def f1_score_func(pred, label):
     # https://stackoverflow.com/questions/43162506/undefinedmetricwarning-f-score-is-ill-defined-and-being-set-to-0-0-in-labels-wi
-    return f1_score(pred, label, average='weighted', labels=np.unique(pred))*100
+    return f1_score(label, pred, average='weighted', labels=np.unique(pred))*100
+
+def iou_func(pred, label):
+    """Intersection over Union IoU scores : Jaccard similarity coefficient score"""
+    return jaccard_score(label, pred, average="weighted")*100
 
 def top_k(logits, y, k : int = 1):
     """
@@ -58,11 +62,10 @@ def top_k(logits, y, k : int = 1):
     #acc = sum(correct)/len(correct)*100
     #acc = accuracy_score(y_pred, y)*100
     acc = get_acc(y_pred, y)
-    #print("============")
-    #print(logits.max(1)[1], y_pred)
-    #print(logits.shape, y.shape)
-    #print(logits, y, k, k_labels, y_pred, a)
-    return acc, f1, y_pred
+    
+    iou = iou_func(y_pred, y)
+    
+    return acc, f1, iou, y_pred
 
 def get_loss(model, batch, params): 
     (x, lengths, langs), y1, y2 = batch
@@ -86,12 +89,15 @@ def get_loss(model, batch, params):
     stats["label_id"] = y2.view(-1).numpy()
         
     for k in range(1, params.topK+1):
-        k_acc, k_f1, y_pred = top_k(logits = logits.detach().cpu(), y=y2, k=k)
+        k_acc, k_f1, iou, y_pred = top_k(logits = logits.detach().cpu(), y=y2, k=k)
         stats["top%d_avg_acc"%k] = k_acc
         stats["top%d_avg_f1_score"%k] = k_f1
         stats["top%d_acc"%k] = k_acc
         stats["top%d_f1_score"%k] = k_f1
-        stats["top%d_label_pred"] = y_pred
+        stats["top%d_IoU"%k] = iou
+        stats["top%d_label_pred"%k] = y_pred
+    
+    assert (stats["label_pred"] == stats["top%d_label_pred"%1]).all()
         
     #if params.version == 2 :
     #    stats["q_c"] = logits.detach().cpu()#.numpy()
@@ -102,8 +108,12 @@ def get_loss(model, batch, params):
     stats["acc"] = acc
         
     f1 = f1_score_func(stats["label_pred"], stats["label_id"])
-    stats["avg_f1_score"] = f1
-    stats["f1_score"] = f1
+    stats["avg_f1_score_weighted"] = f1
+    stats["f1_score_weighted"] = f1
+    
+    iou = iou_func(stats["label_pred"], stats["label_id"])
+    stats["avg_IoU_weighted"] = iou
+    stats["IoU_weighted"] = iou
         
     return loss, stats
 
@@ -122,16 +132,16 @@ def end_of_epoch(stats_list, val_first = True):
             loss.append(stats['loss'])
                 
             for k in range(1, params.topK+1):
-                label_pred_topK[k].extend(stats["top%d_label_pred"])
+                label_pred_topK[k].extend(stats["top%d_label_pred"%k])
 
         scores["%s_acc"%prefix] = get_acc(label_pred, label_ids) #accuracy_score(label_pred, label_ids)*100
         scores["%s_f1_score_weighted"%prefix] = f1_score_func(label_pred, label_ids)
+        scores["%s_IoU_weighted"%prefix] = iou_func(label_pred, label_ids)
         
-        print(label_pred, label_ids)
         for k in range(1, params.topK+1):
-            print(k, label_pred_topK[k], label_ids)
             scores["top%d_%s_acc"%(k, prefix)] = get_acc(label_pred_topK[k], label_ids)
             scores["top%d_%s_f1_score_weighted"%(k, prefix)] = f1_score_func(label_pred_topK[k], label_ids)
+            scores["top%d_%s_IoU_weighted"%(k, prefix)] = iou_func(label_pred_topK[k], label_ids)
             
         #report = classification_report(y_true = label_ids, y_pred = label_pred, labels=label_dict.values(), 
         #    target_names=label_dict.keys(), sample_weight=None, digits=4, output_dict=True, zero_division='warn')
@@ -150,7 +160,7 @@ def end_of_epoch(stats_list, val_first = True):
             # AP_c and MAP
             for k in m_v.keys():
                 v = m_v.get(k, [0.0])
-                scores["%s_mean_average_%s"%(prefix, k)] = sum(v) / len(v)
+                scores["%s_mean_average_%s"%(prefix, k)] = sum(v) / len(v)*100
                         
         l = len(loss)
         l = l if l != 0 else 1
