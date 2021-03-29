@@ -258,18 +258,13 @@ if __name__ == '__main__':
     parser.add_argument('--topK', default=3, const=3, nargs='?',
                         choices=[1, 2, 3, 4, 5, 6], 
                         help="topK")
-    """
-    if not os.path.isfile(from_config_file(parser.parse_known_args()[0]).reload_model) :
-        parser.add_argument("--model_path", type=str, default="", help="Model path")
-        params = parser.parse_args()
-    else :
-        params = parser.parse_args()
-        params.model_path = params.reload_model
-    """
+
+    parser.add_argument("--model_path", type=str, default="", 
+                        help="Reload transformer model from pretrained model / dico / ...")
+    
     params = parser.parse_args()
     params = from_config_file(params)
-    params.model_path = params.reload_model
-
+    
     set_seeds(params.random_seed)
 
     if params.device not in ["cpu", "cuda"] :
@@ -278,8 +273,8 @@ if __name__ == '__main__':
         params.device = torch.device(params.device)
 
     # check parameters
-    assert os.path.isfile(params.model_path)
-    assert os.path.isfile(params.codes)
+    assert os.path.isfile(params.model_path) #or os.path.isfile(params.reload_checkpoint)
+    assert os.path.isfile(params.codes) 
     
     # run experiment
     main(params)

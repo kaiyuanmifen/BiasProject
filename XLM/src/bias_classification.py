@@ -417,7 +417,6 @@ tmp = []
 for k in range(1, len(label_dict)+1):
     tmp.extend( ["%s_%s"%(i, j) for i, j in itertools.product(["top%d"%k], possib)])
 possib.extend(tmp)
-
 tmp_type = lambda name : "ppl" in name or "loss" in name
 
 class Trainer(object):
@@ -492,6 +491,11 @@ class Trainer(object):
         self.checkpoint_path = os.path.join(params.dump_path, "checkpoint.pth")
         if os.path.isfile(self.checkpoint_path) :
             self.load_checkpoint()
+            
+        if params.reload_model :
+            logger.warning("Reload model from %s"%params.reload_model)
+            assert os.path.isfile(params.reload_model)
+            self.load(model_file = params.reload_model)
     
         nb_p = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         self.logger.info(f'Found {nb_p:,} trainable parameters in model.\n')
@@ -695,6 +699,30 @@ class Trainer(object):
             return
         if self.params.save_periodic > 0 and self.epoch % self.params.save_periodic == 0:
             self.save_checkpoint('periodic_%i' % self.epoch, include_optimizer=False)
+
+    def load(self, model_file = None, pretrain_file = None):
+        """ load saved model or pretrained transformer (a part of model) """
+        if model_file and os.path.isfile(model_file):
+            #self.logger.info('Loading the model from', model_file)
+            data = torch.load(model_file, map_location='cpu')
+            if type(data) == dict :
+                data = data["model"]
+            self.model.load_state_dict(data)
+
+        elif pretrain_file and os.path.isfile(pretrain_file): # use pretrained transformer
+            #self.logger.info('Loading the pretrained model from', pretrain_file)
+            if pretrain_file.endswith('.pth'): # pretrain model file in pytorch
+                data = torch.load(pretrain_file, map_location='cpu')
+                if type(data) == dict :
+                    data = data["model"]
+                self.model.transformer.load_state_dict(
+                    {key[12:]: # remove 'transformer.' (in 'transformer.embedding.norm.bias' for example)
+                        value
+                        for key, value in data.items()
+                        if key.startswith('transformer')} # load only transformer parts
+                )
+            else :
+                raise RuntimeError("Incorrect file extension")
 
     def end_epoch(self, scores):
         """

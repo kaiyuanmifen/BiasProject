@@ -4,7 +4,7 @@
     "dump_path":"/content/dump_path",
     "encoder_only":"True",
     "lgs":"en", 
-    "reload_model":"/content/dump_path/mlm_en/tim/best-valid_mlm_ppl.pth",
+    "reload_model":"",
     "reload_checkpoint":"",
     "epoch_size":"-1", 
     "max_epoch":"100", 
@@ -88,5 +88,6 @@
     "hidden_dim": "-1", 
     "gru_n_layers":"1", 
     "bidirectional":"False",
-    "topK":3
+    "topK":3,
+    "model_path":"/content/dump_path/mlm_en/tim/best-valid_mlm_ppl.pth"
 }

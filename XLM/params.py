@@ -391,7 +391,8 @@ config_dic = {
     "hidden_dim":[int, -1], 
     "gru_n_layers":[int, 1], 
     "bidirectional":[bool, False],
-    "topK":[int, 3]
+    "topK":[int, 3],
+    "model_path":[str, ""]
 }
 
 def from_config_file(params):
