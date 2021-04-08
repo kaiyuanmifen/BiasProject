@@ -35,15 +35,7 @@ if __name__ == '__main__':
         
     if True :
         # bias corpus
-        URL="URL"
-        EMAIL="EMAIL"
-        PHONE_NUMBER="PHONE"
-        NUMBER="NUMBER"
-        DIGIT="DIGIT"
-        CUR="CUR" # currency_symbol
-        st = [URL, EMAIL, PHONE_NUMBER, NUMBER,DIGIT,CUR]
-        st = [s.lower() for s in st]
-        special_tokens.extend(st)
+        special_tokens.extend(["<url>", "<email>", "<phone>", "<number>", "<digit>", "<cur>"])
         
     assert os.path.isfile(voc_path)
     assert os.path.isfile(txt_path)

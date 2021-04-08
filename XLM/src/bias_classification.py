@@ -152,7 +152,7 @@ class BertClassifier(nn.Module):
     def __init__(self, n_labels, params, logger):
         super().__init__()
         
-        logger.warning("Reload transformer model path from %s"%params.model_path)
+        logger.warning("Reload dico & transformer model path from %s"%params.model_path)
         reloaded = torch.load(params.model_path, map_location=params.device)
         model_params = AttrDict(reloaded['params'])
         logger.info("Supported languages: %s" % ", ".join(model_params.lang2id.keys()))
@@ -166,8 +166,21 @@ class BertClassifier(nn.Module):
             dico = Dictionary(reloaded['dico_id2word'], reloaded['dico_word2id'], reloaded['dico_counts'], rest=dico_rest)
         except AssertionError : # assert all(self.id2word[self.rest + i] == SPECIAL_WORD % i for i in range(SPECIAL_WORDS))
             dico = Dictionary(reloaded['dico_id2word'], reloaded['dico_word2id'], reloaded['dico_counts'])
+        
+        try :
+            model = TransformerModel(model_params, dico, is_encoder=True, with_output=True).to(params.device)
+        except AttributeError :
+            # For models trained when TIM was not yet integrated : for example XLM pre-trained by facebook AI
             
-        model = TransformerModel(model_params, dico, is_encoder=True, with_output=True).to(params.device)
+            # AttributeError: 'AttrDict' object has no attribute 'dim_feedforward'
+            # ...................................................'use_mine'
+            # ...
+            setattr(model_params, "dim_feedforward", model_params.emb_dim*4) # https://github.com/facebookresearch/XLM/blob/master/xlm/model/transformer.py#L268
+            setattr(model_params, "use_mine", params.use_mine)
+            setattr(model_params, "tim_layers_pos", params.tim_layers_pos)
+            # ...
+            model = TransformerModel(model_params, dico, is_encoder=True, with_output=True).to(params.device)
+            
         state_dict = reloaded['model']
         # handle models from multi-GPU checkpoints
         if 'checkpoint' in params.model_path:
@@ -335,6 +348,8 @@ class BiasClassificationDataset(Dataset):
                 yield text, torch.tensor(p_c, dtype=torch.float), torch.tensor(label, dtype=torch.long)
                 
     def __iter__(self): # iterator to load data
+        if self.shuffle :
+            random.shuffle(self.data)
         if not self.in_memory :
             i = 0
             while self.n_samples > i :
@@ -490,6 +505,7 @@ class Trainer(object):
 
         self.checkpoint_path = os.path.join(params.dump_path, "checkpoint.pth")
         if os.path.isfile(self.checkpoint_path) :
+            # sometime : RuntimeError: [enforce fail at inline_container.cc:145] . PytorchStreamReader failed reading zip archive: failed finding central directory
             self.load_checkpoint()
             
         if params.reload_model :

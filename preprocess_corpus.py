@@ -29,6 +29,14 @@ nltk.download('averaged_perceptron_tagger')
 
 import ntpath
 
+url=[" replacewithurl ".upper(), " <url> "]
+email=[" replacewithemail ".upper(), " <email> "]
+phone_number=[" replacewithphonenumber ".upper(), " <phone> "]
+number=[" replacewithnumber ".upper(), " <number> "]
+digit=[" replacewithdigit ".upper(), " <digit> "]
+currency_symbol=[" replacewithcurrencysymbol ".upper(), " <cur> "]
+special_tokens = [url, email, phone_number, number, digit, currency_symbol]
+
 def path_leaf(path):
     # https://stackoverflow.com/a/8384788/11814682
     head, tail = ntpath.split(path)
@@ -58,12 +66,21 @@ def cleanpunct(w, excapt=[]):
     # "mario...im-terrified-of-black-rioters-cuomo." becomes "mario im terrified of black rioters cuomo."
     return re.sub(r"""[%s]+ \ *"""%replace_by_space(string.punctuation, excapt)," ", w, flags=re.VERBOSE)
     #return re.sub(r"[,.;@#?!&$]+\ *", " ", w)
-    
-def preprocess_sentence(w):
+
+def split(word):
+    """https://www.geeksforgeeks.org/python-split-string-into-list-of-characters/
+    Python3 program to Split string into characters"""
+    return [char for char in word]
+
+def preprocess_sentence(w, i = 1):
     w = unicode_to_ascii(w.lower().strip())
     w = re.sub(r"<u\+\w+><u\+\w+>", "", w) # <u+00a0><u+00af>, <u+00a0><u+00b0>, ...
     w = cleanhtml(w)
     #w = cleanpunct(w, excapt = ["'", '"'])
+    if i == 1 :
+        w = cleanpunct(w, excapt=split(string.punctuation.replace("<", "").replace(">","")))
+    else :
+        i = 0
     w = clean(w,
                 fix_unicode=True,               # fix various unicode errors
                 to_ascii=True,                  # transliterate to closest ASCII representation
@@ -77,17 +94,37 @@ def preprocess_sentence(w):
                 no_currency_symbols=True,      # replace all currency symbols with a special token
                 no_punct=False,                 # remove punctuations
                 replace_with_punct="",          # instead of removing punctuations you may replace them
-                replace_with_url=" URL ",
-                replace_with_email=" EMAIL ",
-                replace_with_phone_number=" PHONE ",
-                replace_with_number=" NUMBER ",
-                replace_with_digit=" DIGIT ",
-                replace_with_currency_symbol=" CUR ",
+                replace_with_url=url[i],
+                replace_with_email=email[i],
+                replace_with_phone_number=phone_number[i],
+                replace_with_number=number[i],
+                replace_with_digit=digit[i],
+                replace_with_currency_symbol=currency_symbol[i],
                 lang="en"                       
             )
     w = w.strip("'").strip('"').replace("\n", " ").strip(" ")
     #w = cleanpunct(w, excapt = ["'", '"', "[", "]"])
-    w = cleanpunct(w, excapt = ["'", '"'])
+    #w = cleanpunct(w, excapt = ["'", '"'])
+    if i == 1 :
+        w = cleanpunct(w, excapt = ["'", "<", ">"])
+    else :
+        w = cleanpunct(w, excapt = ["'"])
+        for sp in special_tokens :
+            w = w.replace(sp[0], sp[1])
+        """
+        def f(w) :
+            for sp in special_tokens :
+                w = w.replace(sp[0], sp[1])
+            return w
+
+        def g(w) :
+            for sp in special_tokens :
+                if sp[0] in w :
+                    return True
+        
+        while g(w) :
+            w = f(w)
+        """
     return w
 
 def is_valid(s):
@@ -145,6 +182,7 @@ def write_corpus(corpus, file_path, version = 1, random_seed = 0) :
     assert version in [1, 2]
     corpus = [s.strip()+"\n" for s in corpus]
     with open(file_path, "w") as f :
+        print("Write to %s"%file_path)
         if version == 2 :
             f.writelines(good_corpus(corpus, random_seed))
         else :
