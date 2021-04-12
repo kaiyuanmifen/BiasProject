@@ -180,7 +180,7 @@ def good_corpus(data, random_seed = 0) :
 
 def write_corpus(corpus, file_path, version = 1, random_seed = 0) :
     assert version in [1, 2]
-    corpus = [s.strip()+"\n" for s in corpus]
+    corpus = [s.strip().replace("\n", " ")+"\n" for s in corpus]
     with open(file_path, "w") as f :
         print("Write to %s"%file_path)
         if version == 2 :

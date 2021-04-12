@@ -286,6 +286,7 @@ class TransformerModel(nn.Module):
         self.attention_dropout = params.attention_dropout
         assert self.dim % self.n_heads == 0, 'transformer dim must be a multiple of n_heads'
 
+        # TIM layers positions an parameters
         self.tim_layers_pos = []
         self.use_mine = params.use_mine
         if params.tim_layers_pos != ""  and not self.is_decoder:

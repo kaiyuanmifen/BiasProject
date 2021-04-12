@@ -39,10 +39,16 @@ def run_strip_accents(text):
         output.append(char)
     return "".join(output)
 
+def bias_corpus_step(w):
+    for token in  ["< url >", "< email >", "< phone >", "< number >", "< digit >", "< cur >"] :
+        w = w.replace(token, token.replace(" ", ""))
+    return w       
 
 for line in sys.stdin:
     line = convert_to_unicode(line.rstrip().lower())
     line = run_strip_accents(line)
+    if True :
+        line = bias_corpus_step(line)
     try :
         print(u'%s' % line.lower())
     except : 

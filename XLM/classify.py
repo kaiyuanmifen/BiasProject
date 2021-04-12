@@ -1,171 +1,66 @@
 import torch
-import torch.nn as nn
-from torch.optim import Adam
 import torch.nn.functional as F
-#from optim import ScheduledOptim
 import os
-import numpy as np
-from sklearn.metrics import f1_score, accuracy_score, jaccard_score, classification_report
 
 from src.slurm import init_signal_handler, init_distributed_mode
 from src.utils import initialize_exp, set_seeds
-from src.bias_classification import load_dataset, BertClassifier, Trainer, label_dict
-from src.optim import get_optimizer
+from src.bias_classification import load_dataset, BertClassifier, Trainer
 from src.utils import bool_flag
 
 from params import get_parser, from_config_file
-
-def get_acc(pred, label):
-    arr = (np.array(pred) == np.array(label)).astype(float)
-    if arr.size != 0: # check NaN 
-        return arr.mean()*100
-    return 0
-
-def f1_score_func(pred, label):
-    # https://stackoverflow.com/questions/43162506/undefinedmetricwarning-f-score-is-ill-defined-and-being-set-to-0-0-in-labels-wi
-    return f1_score(label, pred, average='weighted', labels=np.unique(pred))*100
-
-def iou_func(pred, label):
-    """Intersection over Union IoU scores : Jaccard similarity coefficient score"""
-    return jaccard_score(label, pred, average="weighted")*100
-
-def top_k(logits, y, k : int = 1):
-    """
-    logits : (bs, n_labels)
-    y : (bs,)
-    """
-    labels_dim = 1
-    assert 1 <= k <= logits.size(labels_dim)
-    
-    k_labels = torch.topk(input = logits, k = k, dim=labels_dim, largest=True, sorted=True)[1]
-
-    # True (#0) if `expected label` in k_labels, False (0) if not
-    a = ~torch.prod(input = torch.abs(y.unsqueeze(labels_dim) - k_labels), dim=labels_dim).to(torch.bool)
-    
-    # These two approaches are equivalent
-    if False :
-        y_pred = torch.empty_like(y)
-        for i in range(y.size(0)):
-            if a[i] :
-                y_pred[i] = y[i]
-            else :
-                y_pred[i] = k_labels[i][0]
-        #correct = a.to(torch.int8).numpy()
-    else :
-        a = a.to(torch.int8)
-        y_pred = a * y + (1-a) * k_labels[:,0]
-        #correct = a.numpy()
-    
-    y_pred = y_pred.cpu().numpy()
-    #f1 = f1_score(y_pred, y, average='weighted')*100
-    f1 = f1_score_func(y_pred, y)
-    #acc = sum(correct)/len(correct)*100
-    #acc = accuracy_score(y_pred, y)*100
-    acc = get_acc(y_pred, y)
-    
-    iou = iou_func(y_pred, y)
-    
-    return acc, f1, iou, y_pred
+from metrics import get_stats, get_collect, get_score
 
 def get_loss(model, batch, params): 
     (x, lengths, langs), y1, y2 = batch
         
-    #if params.n_langs > 1 :
-    if False :
-        langs = langs.to(params.device)
-    else : 
-        langs = None
+    langs = langs.to(params.device) if params.n_langs > 1 else None
     logits, loss = model(x.to(params.device), lengths.to(params.device), y=y1.to(params.device), positions=None, langs=langs)
         
     stats = {}
     n_words = lengths.sum().item()
     stats['n_words'] = n_words
-    #stats["xe_loss"] = loss.item() * 6
     stats["avg_loss"] = loss.item()
     stats["loss"] = loss.item()
+    stats["y1"] = y1.detach().cpu()#.numpy()
         
     logits = F.softmax(logits, dim = -1)
-    stats["label_pred"] = logits.max(1)[1].view(-1).detach().cpu().numpy()
-    stats["label_id"] = y2.view(-1).numpy()
-        
-    for k in range(1, params.topK+1):
-        k_acc, k_f1, iou, y_pred = top_k(logits = logits.detach().cpu(), y=y2, k=k)
-        stats["top%d_avg_acc"%k] = k_acc
-        stats["top%d_avg_f1_score"%k] = k_f1
-        stats["top%d_acc"%k] = k_acc
-        stats["top%d_f1_score"%k] = k_f1
-        stats["top%d_IoU"%k] = iou
-        stats["top%d_label_pred"%k] = y_pred
     
-    assert (stats["label_pred"] == stats["top%d_label_pred"%1]).all()
-        
-    #if params.version == 2 :
-    #    stats["q_c"] = logits.detach().cpu()#.numpy()
-    #    stats["p_c"] = y1.detach().cpu()#.numpy()
-        
-    acc = get_acc(stats["label_pred"], stats["label_id"])
-    stats["avg_acc"] = acc
-    stats["acc"] = acc
-        
-    f1 = f1_score_func(stats["label_pred"], stats["label_id"])
-    stats["avg_f1_score_weighted"] = f1
-    stats["f1_score_weighted"] = f1
+    s = get_stats(logits, y2, params)
+    assert (s["label_pred"] == s["top%d_label_pred"%1]).all()
+    stats = {**stats, **s}
+    stats["logits"] = logits.detach().cpu()
+    stats["y2"] = y2.cpu()
     
-    iou = iou_func(stats["label_pred"], stats["label_id"])
-    stats["avg_IoU_weighted"] = iou
-    stats["IoU_weighted"] = iou
+    if params.version == 2 :
+        inv_y2, inv_logits = logits.max(1)[1].view(-1).cpu(), y1.to(params.device)
+        s = get_stats(inv_logits, inv_y2, params)
+        #assert (s["label_pred"] == s["top%d_label_pred"%1]).all()
+        for k in s.keys() :
+            stats["inv_%s"%k] = s[k]
+        stats["inv_logits"] = inv_logits.detach().cpu()
+        stats["inv_y2"] = inv_y2.cpu()
         
+        #stats["q_c"] = logits.detach().cpu()#.numpy()
+        #stats["p_c"] = y1.detach().cpu()#.numpy()
+    
     return loss, stats
 
 def end_of_epoch(stats_list, val_first = True):
     scores = {}
     for prefix, total_stats in zip(["val", "train"] if val_first else ["train","val"], stats_list):
-        loss = []
-        label_pred = []
-        label_ids = []
-            
-        label_pred_topK = { k : [] for k in range(1, params.topK+1)}
-            
-        for stats in total_stats :
-            label_pred.extend(stats["label_pred"])
-            label_ids.extend(stats["label_id"])
-            loss.append(stats['loss'])
-                
-            for k in range(1, params.topK+1):
-                label_pred_topK[k].extend(stats["top%d_label_pred"%k])
-
-        scores["%s_acc"%prefix] = get_acc(label_pred, label_ids) #accuracy_score(label_pred, label_ids)*100
-        scores["%s_f1_score_weighted"%prefix] = f1_score_func(label_pred, label_ids)
-        scores["%s_IoU_weighted"%prefix] = iou_func(label_pred, label_ids)
+        collect = get_collect(total_stats, params)
         
-        for k in range(1, params.topK+1):
-            scores["top%d_%s_acc"%(k, prefix)] = get_acc(label_pred_topK[k], label_ids)
-            scores["top%d_%s_f1_score_weighted"%(k, prefix)] = f1_score_func(label_pred_topK[k], label_ids)
-            scores["top%d_%s_IoU_weighted"%(k, prefix)] = iou_func(label_pred_topK[k], label_ids)
-            
-        #report = classification_report(y_true = label_ids, y_pred = label_pred, labels=label_dict.values(), 
-        #    target_names=label_dict.keys(), sample_weight=None, digits=4, output_dict=True, zero_division='warn')
-        report = classification_report(y_true = label_ids, y_pred = label_pred, digits=4, output_dict=True)
-        m_v = {'precision': [], 'recall': [], 'f1-score':[]}
-        if True :
-            for k in report :
-                if k in label_dict.keys() :
-                    v = report.get(k, None)
-                    for k1 in m_v.keys():
-                        m_v[k1] = m_v.get(k1, []) + [v[k1]]
-                    scores["%s_class_%s"%(prefix, k)] = v
-                else :
-                    scores["%s_%s"%(prefix, k)] = report.get(k, None)
-            
-            # AP_c and MAP
-            for k in m_v.keys():
-                v = m_v.get(k, [0.0])
-                scores["%s_mean_average_%s"%(prefix, k)] = sum(v) / len(v)*100
-                        
-        l = len(loss)
+        l = len(collect['loss'])
         l = l if l != 0 else 1
-        scores["%s_loss"%prefix] = sum(loss) / l
+        scores["%s_loss"%prefix] = sum(collect['loss']) / l
         
+        s = get_score(collect, prefix, params, inv="") 
+        scores = {**scores, **s}
+        
+        if params.version == 2 :   
+            s = get_score(collect, prefix, params, inv="inv_") 
+            scores = {**scores, **s}
+ 
     return scores
 
 def main(params):
@@ -180,30 +75,18 @@ def main(params):
     init_signal_handler()
             
     model = BertClassifier(n_labels = 6, params = params, logger = logger)
-    model = model.to(params.device)
+    #model = model.to(params.device)
+    logger.info(model)
             
     train_dataset, val_dataset = load_dataset(params, logger, model.dico)
     #logger.info(model.dico.word2id)
     #exit()
     
     # optimizers
-    if False :
-        lr= 1e-4
-        betas=(0.9, 0.999) 
-        weight_decay=0.01
-        optimizer_p = Adam(model.parameters(), lr=lr, betas=betas, weight_decay=weight_decay)
-        #optimizer_e = get_optimizer(model.model.parameters(), params.optimizer)
-    else :
-        #params.optimizer_e = params.optimizer
-        params.optimizer_p = params.optimizer
-        if not params.freeze_transformer :
-            #optimizer_e = get_optimizer(model.model.parameters(), params.optimizer_e)
-            optimizer_p = get_optimizer(model.model.pred_layer.parameters(), params.optimizer_p)
-        else :
-            #optimizer_e =  None
-            optimizer_p = get_optimizer(model.model.pred_layer.parameters(), params.optimizer_p)
-        
-    trainer = Trainer(params, model, optimizer_p, train_dataset, val_dataset, logger)
+    optimizers = model.get_optimizers(params) 
+    
+    # Trainer
+    trainer = Trainer(params, model, optimizers, train_dataset, val_dataset, logger)
     
     logger.info("")
     if not params.eval_only :
@@ -216,8 +99,6 @@ if __name__ == '__main__':
     # generate parser / parse parameters
     parser = get_parser()
     
-    parser.add_argument("--freeze_transformer", type=bool_flag, default=True, 
-                        help="freeze the transformer encoder part of the model")
     parser.add_argument('--version', default=1, const=1, nargs='?',
                         choices=[1, 2], 
                         help=  '1 : averaging the labels with the confidence scores as weights (might be noisy) \
@@ -232,10 +113,11 @@ if __name__ == '__main__':
     parser.add_argument("--train_data_file", type=str, default="", help="file (.csv) containing the data")
     parser.add_argument("--val_data_file", type=str, default="", help="file (.csv) containing the data")
     
-    parser.add_argument("--shuffle", type=bool_flag, default=False, help="shuffle Dataset")
+    parser.add_argument("--shuffle", type=bool_flag, default=True, help="shuffle Dataset")
     #parser.add_argument("--group_by_size", type=bool_flag, default=True, help="Sort sentences by size during the training")
     
     parser.add_argument("--codes", type=str, required=True, help="path of bpe code")
+    parser.add_argument("--vocab", type=str, default="", help="path of bpe vocab")
     
     parser.add_argument("--min_len", type=int, default=1, 
                         help="minimun sentence length before bpe in training set")
@@ -261,6 +143,22 @@ if __name__ == '__main__':
 
     parser.add_argument("--model_path", type=str, default="", 
                         help="Reload transformer model from pretrained model / dico / ...")
+    
+    parser.add_argument("--finetune_layers", type=str, default='', 
+                        help="Layers to finetune. default ==> freeze the transformer encoder part of the model \
+                            0:_1 or 0:-1 ===> 0 = embeddings, _1 = last encoder layer \
+                            0,1,6 or 0:1,6 ===> embeddings, first encoder layer, 6th encoder layer \
+                            0:4,6:8,11 ===> embeddings, 1-2-3-4th encoder layers,  6-7-8th encoder layers, 11 encoder layer \
+                            Do not include any symbols other than numbers ([0, n_layers]), comma (,) and two points (:)\
+                            This supports negative indexes ( _1 or -1 refers to the last layer for example)")
+    parser.add_argument("--weighted_training", type=bool_flag, default=False,
+                        help="Use a weighted loss during training")
+    #parser.add_argument("--dropout", type=float, default=0,
+    #                    help="Fine-tuning dropout")
+    parser.add_argument("--optimizer_e", type=str, default="adam,lr=0.0001",
+                        help="Embedder (pretrained model) optimizer")
+    parser.add_argument("--optimizer_p", type=str, default="adam,lr=0.0001",
+                        help="Projection (classifier) optimizer")
     
     params = parser.parse_args()
     params = from_config_file(params)

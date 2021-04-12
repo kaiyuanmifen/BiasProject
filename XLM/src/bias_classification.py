@@ -11,14 +11,19 @@ from tqdm import tqdm
 import itertools
 import gc
 import time
+import copy
 from collections import OrderedDict
 import numpy as np
 import pandas as pd
 import random
 
+#import fastBPE
+
 from .utils import truncate, AttrDict 
-from .data.dictionary import Dictionary
+from .optim import get_optimizer
+from .data.dictionary import Dictionary, BOS_WORD, EOS_WORD, PAD_WORD, UNK_WORD, MASK_WORD
 from .model.transformer import TransformerModel
+from .model.embedder import SentenceEmbedder
 from .trainer import Trainer as MainTrainer
 
 #git clone https://github.com/NVIDIA/apex
@@ -26,16 +31,7 @@ from .trainer import Trainer as MainTrainer
 #import apex
 
 # bias corpus
-URL="URL"
-EMAIL="EMAIL"
-PHONE_NUMBER="PHONE"
-NUMBER="NUMBER"
-DIGIT="DIGIT"
-CUR="CUR" # currency_symbol
-special_tokens = []
-st = [URL, EMAIL, PHONE_NUMBER, NUMBER,DIGIT,CUR]
-st = [s.lower() for s in st]
-special_tokens.extend(st)
+special_tokens = ["<url>", "<email>", "<phone>", "<number>", "<digit>", "<cur>"]
 dico_rest=4+len(special_tokens)
 
 label_dict = {"0":0, "1":1, "2":2, "3" : 3, "4" : 4, "5" : 5}
@@ -120,7 +116,7 @@ class PredLayer(nn.Module):
             else :
                 self.criterion = nn.CrossEntropyLoss().to(params.device)
 
-    def forward(self, x, y, get_scores=False):
+    def forward(self, x, y, get_scores=True):
         """
         Compute the loss, and optionally the scores.
         """   
@@ -154,87 +150,112 @@ class BertClassifier(nn.Module):
         
         logger.warning("Reload dico & transformer model path from %s"%params.model_path)
         reloaded = torch.load(params.model_path, map_location=params.device)
-        model_params = AttrDict(reloaded['params'])
-        logger.info("Supported languages: %s" % ", ".join(model_params.lang2id.keys()))
-
-        # update dictionary parameters
-        for name in ['n_words', 'bos_index', 'eos_index', 'pad_index', 'unk_index', 'mask_index']:
-            setattr(params, name, getattr(model_params, name))
+        pretrain_params = AttrDict(reloaded['params'])
+        logger.info("Supported languages: %s" % ", ".join(pretrain_params.lang2id.keys()))
 
         # build dictionary / build encoder / build decoder / reload weights
         try :
             dico = Dictionary(reloaded['dico_id2word'], reloaded['dico_word2id'], reloaded['dico_counts'], rest=dico_rest)
         except AssertionError : # assert all(self.id2word[self.rest + i] == SPECIAL_WORD % i for i in range(SPECIAL_WORDS))
             dico = Dictionary(reloaded['dico_id2word'], reloaded['dico_word2id'], reloaded['dico_counts'])
+        self.dico = dico
         
+        # update dictionary parameters
+        pretrain_params.n_words = len(dico)
+        pretrain_params.bos_index = dico.index(BOS_WORD)
+        pretrain_params.eos_index = dico.index(EOS_WORD)
+        pretrain_params.pad_index = dico.index(PAD_WORD)
+        pretrain_params.unk_index = dico.index(UNK_WORD)
+        pretrain_params.mask_index = dico.index(MASK_WORD)
+        for name in ['n_words', 'bos_index', 'eos_index', 'pad_index', 'unk_index', 'mask_index']:
+            setattr(params, name, getattr(pretrain_params, name))
+            
         try :
-            model = TransformerModel(model_params, dico, is_encoder=True, with_output=True).to(params.device)
+            model = TransformerModel(pretrain_params, dico, is_encoder=True, with_output=True).to(params.device)
         except AttributeError :
             # For models trained when TIM was not yet integrated : for example XLM pre-trained by facebook AI
             
             # AttributeError: 'AttrDict' object has no attribute 'dim_feedforward'
             # ...................................................'use_mine'
             # ...
-            setattr(model_params, "dim_feedforward", model_params.emb_dim*4) # https://github.com/facebookresearch/XLM/blob/master/xlm/model/transformer.py#L268
-            setattr(model_params, "use_mine", params.use_mine)
-            setattr(model_params, "tim_layers_pos", params.tim_layers_pos)
+            setattr(pretrain_params, "dim_feedforward", pretrain_params.emb_dim*4) # https://github.com/facebookresearch/XLM/blob/master/xlm/model/transformer.py#L268
+            setattr(pretrain_params, "use_mine", params.use_mine)
+            setattr(pretrain_params, "tim_layers_pos", params.tim_layers_pos)
             # ...
-            model = TransformerModel(model_params, dico, is_encoder=True, with_output=True).to(params.device)
+            model = TransformerModel(pretrain_params, dico, is_encoder=True, with_output=True).to(params.device)
             
         state_dict = reloaded['model']
         # handle models from multi-GPU checkpoints
         if 'checkpoint' in params.model_path:
             state_dict = {(k[7:] if k.startswith('module.') else k): v for k, v in state_dict.items()}
         model.load_state_dict(state_dict)
+        model.eval()
+        model = model.to(params.device)
+        self.embedder = SentenceEmbedder(model, dico, pretrain_params) #copy.deepcopy(SentenceEmbedder(model, dico, pretrain_params))
+        params.freeze_transformer = params.finetune_layers == ""
+        self.freeze_transformer = params.freeze_transformer
+        #if params.freeze_transformer :
+        #    for param in self.embedder.model.parameters():
+        #        param.requires_grad = False
         
+        # adding missing parameters
         params.max_batch_size = 0
-    
-        self.model = model
-        if params.freeze_transformer :
-            for param in self.model.parameters():
-                param.requires_grad = False
-            #self.model.eval()
-            
+        params.n_langs = 1
+        
+        # reload langs from pretrained model
+        #params.n_langs = embedder.pretrain_params['n_langs']
+        #params.id2lang = embedder.pretrain_params['id2lang']
+        #params.lang2id = embedder.pretrain_params['lang2id']
+        params.lang = params.lgs
+        params.lang_id = pretrain_params.lang2id[params.lang]
+
         d_model = model.dim
         params.hidden_dim = d_model if params.hidden_dim == -1 else params.hidden_dim
-        self.model.pred_layer = PredLayer(d_model, n_labels, params)
-        for param in self.model.pred_layer.parameters():
-            param.requires_grad = True
-        #self.model.pred_layer.train()
-        
-        logger.info(self.model)
-                    
-        self.freeze_transformer = params.freeze_transformer
-        params.lang = params.lgs
-        params.lang_id = model_params.lang2id[params.lang]
-        self.dico = dico
-        self.debug_num = params.debug_num
+        self.pred_layer = PredLayer(d_model, n_labels, params).to(params.device)
 
+        self.whole_output = params.debug_num == 2
+        
     def forward(self, x, lengths, y, positions=None, langs=None, get_scores = True):
         """
         Inputs:
             `x`        : LongTensor of shape (slen, bs)
             `lengths`  : LongTensor of shape (bs,)
         """
-        slen, bs = x.size()
-        assert lengths.size(0) == bs and lengths.max().item() == slen
-        
-        if self.freeze_transformer :
-            with torch.no_grad():
-                h = self.model('fwd', x=x, lengths=lengths, positions=positions, langs=langs, causal=False)#.contiguous() # (seq_len, batch_size, d_model)
-        else :
-            h = self.model('fwd', x=x, lengths=lengths, positions=positions, langs=langs, causal=False)#.contiguous() # (seq_len, batch_size, d_model)
-        
-        return self.model.pred_layer(h[0] if self.debug_num != 2 else h, y, get_scores = get_scores)
+        h = self.embedder.get_embeddings(x, lengths, positions=positions, langs=langs, whole_output = self.whole_output)
+        return self.pred_layer(h, y)
 
-    def parameters(self):
-        return self.model.pred_layer.parameters() if self.freeze_transformer else self.model.parameters()
+    def get_optimizers(self, params) :
+        optimizer_p = get_optimizer(self.pred_layer.parameters(), params.optimizer_p)
+        if params.finetune_layers == "" :
+            return [optimizer_p]
+        try :
+            optimizer_e = get_optimizer(list(self.embedder.get_parameters(params.finetune_layers)), params.optimizer_e)
+            return optimizer_e, optimizer_p
+        except ValueError: #optimizer got an empty parameter list
+            return [optimizer_p]
+    
+    def __str__(self) :
+        return self.embedder.model.__str__() + self.pred_layer.__str__()
+    
+    def train(self):
+        if not self.freeze_transformer :
+            self.embedder.train()
+        self.pred_layer.train()
 
+    def eval(self):
+        self.embedder.eval()
+        self.pred_layer.eval()
+    
 # Below is one way to bpe-ize sentences
-#codes = "" # path to the codes of the model
-def to_bpe(sentences, codes : str, logger, fastbpe = os.path.join(os.getcwd(), 'tools/fastBPE/fast')):
+#codes # path to the codes of the model
+#vocab (optional) # path to the vocab of the model
+def to_bpe_cli(sentences, codes : str, logger, vocab : str = "", fastbpe = os.path.join(os.getcwd(), 'tools/fastBPE/fast')):
     """Sentences have to be in the BPE format, i.e. tokenized sentences on which you applied fastBPE.
-    https://github.com/facebookresearch/XLM/blob/master/generate-embeddings.ipynb"""
+    https://github.com/facebookresearch/XLM/blob/master/generate-embeddings.ipynb
+    
+    installation :
+    git clone https://github.com/glample/fastBPE tools/fastBPE && cd tools/fastBPE && g++ -std=c++11 -pthread -O3 fastBPE/main.cc -IfastBPE -o fast
+    """
     # write sentences to tmp file
     tmp_file1 = './tmp_sentences.txt'
     tmp_file2 = './tmp_sentences.bpe'
@@ -243,7 +264,7 @@ def to_bpe(sentences, codes : str, logger, fastbpe = os.path.join(os.getcwd(), '
             fwrite.write(sent + '\n')
     
     # apply bpe to tmp file
-    os.system('%s applybpe %s %s %s' % (fastbpe, tmp_file2, tmp_file1, codes))
+    os.system('%s applybpe %s %s %s %s' % (fastbpe, tmp_file2, tmp_file1, codes, vocab))
     
     # load bpe-ized sentences
     sentences_bpe = []
@@ -256,6 +277,12 @@ def to_bpe(sentences, codes : str, logger, fastbpe = os.path.join(os.getcwd(), '
     os.remove(tmp_file2)
     
     return sentences_bpe
+
+def to_bpe_py(sentences, codes : str,  vocab : str = ""):
+    """Sentences have to be in the BPE format, i.e. tokenized sentences on which you applied fastBPE.
+    installation : pip install fastbpe"""
+    import fastBPE
+    return fastBPE.fastBPE(codes, vocab).apply(sentences)
 
 class BiasClassificationDataset(Dataset):
     """ Dataset class for Bias Classification"""
@@ -283,7 +310,9 @@ class BiasClassificationDataset(Dataset):
         sentences = [s.lower() for s in sentences]
         
         # bpe-ize sentences
-        sentences = to_bpe(sentences, codes=params.codes, logger = logger)
+        logger.info("bpe-ize sentences...")
+        #sentences = to_bpe_cli(sentences, codes=params.codes, logger = logger, vocab = params.vocab)
+        sentences = to_bpe_py(sentences, codes=params.codes, vocab = params.vocab)
         
         # check how many tokens are OOV
         n_w = len([w for w in ' '.join(sentences).split()])
@@ -323,6 +352,7 @@ class BiasClassificationDataset(Dataset):
         columns = list(df.columns[1:]) # excapt "'Unnamed: 0'"
         rows = df.iterrows()
         if self.shuffle :
+            rows = list(rows)
             random.shuffle(rows)
         if self.n_samples :
             rows = list(rows)[:self.n_samples]
@@ -436,10 +466,10 @@ tmp_type = lambda name : "ppl" in name or "loss" in name
 
 class Trainer(object):
     """Training Helper Class"""
-    def __init__(self, params, model, optimizer, train_data_iter, val_data_iter, logger):
+    def __init__(self, params, model, optimizers, train_data_iter, val_data_iter, logger):
         self.params = params
         self.model = model
-        self.optimizer = optimizer # optim
+        self.optimizers = optimizers # optim
 
         # iterator to load data
         self.train_data_iter = train_data_iter 
@@ -539,8 +569,11 @@ class Trainer(object):
         
         # Allow Amp to perform casts as required by the opt_level : https://nvidia.github.io/apex/amp.html
         import apex
-        self.model, self.optimizer = apex.amp.initialize(self.model, self.optimizer, opt_level='O%i' % self.params.amp)
-
+        if len(self.optimizers) == 1 :
+            self.model, self.optimizers[0] = apex.amp.initialize(self.model, self.optimizers[0], opt_level='O%i' % self.params.amp)
+        else :
+            raise RuntimeError("Not supported")
+        
     def iter(self):
         """
         End of iteration.
@@ -560,7 +593,9 @@ class Trainer(object):
         # regular optimization
         if self.params.amp == -1:
             if self.params.accumulate_gradients == 1 :
-                self.optimizer.zero_grad()
+                for optimizer in self.optimizers :
+                    optimizer.zero_grad()
+                    
                 loss.backward(retain_graph=retain_graph)
                 
                 if self.params.clip_grad_norm > 0:
@@ -569,7 +604,9 @@ class Trainer(object):
                     # norm_check_b = (sum([p.grad.norm(p=2).item() ** 2 for p in self.model.parameters()])) ** 0.5
                     # self.logger.info(norm_check_a, norm_check_b)
                 
-                self.optimizer.step()
+                for optimizer in self.optimizers :
+                    optimizer.step()
+                    
             else : # accumulate gradient if need
                 # https://discuss.pytorch.org/t/why-do-we-need-to-set-the-gradients-manually-to-zero-in-pytorch/4903/20
                 if self.n_iter % self.params.accumulate_gradients == 0:
@@ -578,9 +615,10 @@ class Trainer(object):
                         # norm_check_a = (sum([p.grad.norm(p=2).item() ** 2 for p in self.model.parameters()])) ** 0.5
                         clip_grad_norm_(self.model.parameters(), self.params.clip_grad_norm)
                         # norm_check_b = (sum([p.grad.norm(p=2).item() ** 2 for p in self.model.parameters()])) ** 0.5
-                        # self.logger.info(norm_check_a, norm_check_b)
-                    self.optimizer.step()
-                    self.optimizer.zero_grad()
+                    for optimizer in self.optimizers :
+                        optimizer.step()
+                    for optimizer in self.optimizers :
+                        optimizer.zero_grad()
                 else :
                     loss.backward(retain_graph=retain_graph)
 
@@ -589,19 +627,19 @@ class Trainer(object):
         else:
             import apex
             if self.n_iter % self.params.accumulate_gradients == 0:
-                with apex.amp.scale_loss(loss, self.optimizer) as scaled_loss:
+                with apex.amp.scale_loss(loss, self.optimizers[0]) as scaled_loss:
                     scaled_loss.backward(retain_graph=retain_graph)
                 
                 if self.params.clip_grad_norm > 0:
                     # norm_check_a = (sum([p.grad.norm(p=2).item() ** 2 for p in self.model.parameters()])) ** 0.5
-                    clip_grad_norm_(apex.amp.master_params(self.optimizer), self.params.clip_grad_norm)
+                    clip_grad_norm_(apex.amp.master_params(self.optimizers[0]), self.params.clip_grad_norm)
                     # norm_check_b = (sum([p.grad.norm(p=2).item() ** 2 for p in self.model.parameters()])) ** 0.5
                     # self.logger.info(norm_check_a, norm_check_b)
 
-                self.optimizer.step()
-                self.optimizer.zero_grad()
+                self.optimizers[0].step()
+                self.optimizers[0].zero_grad()
             else:
-                with apex.amp.scale_loss(loss, optimizer, delay_unscale=True) as scaled_loss:
+                with apex.amp.scale_loss(loss, self.optimizers[0], delay_unscale=True) as scaled_loss:
                     scaled_loss.backward(retain_graph=retain_graph)
 
     def plot_score(self, scores):
@@ -650,7 +688,7 @@ class Trainer(object):
 
         if include_optimizer:
             self.logger.warning(f"Saving optimizer ...")
-            data['optimizer'] = self.optimizer.state_dict()
+            data['optimizer'] = [optimizer.state_dict() for optimizer in self.optimizers]
 
         torch.save(data, checkpoint_path)
 
@@ -686,16 +724,18 @@ class Trainer(object):
             if reloading_checkpoint_condition :
                 if False:  # AMP checkpoint reloading is buggy, we cannot do that - TODO: fix - https://github.com/NVIDIA/apex/issues/250
                     self.logger.warning(f"Reloading checkpoint optimizer ...")
-                    self.optimizer.load_state_dict(data['optimizer'])
+                    for optimizer, state_dict in zip(self.optimizers, data['optimizer']) :
+                        optimizer.load_state_dict(state_dict)
                 else:  # instead, we only reload current iterations / learning rates
                     self.logger.warning(f"Not reloading checkpoint optimizer.")
-                    for group_id, param_group in enumerate(self.optimizer.param_groups):
-                        if 'num_updates' not in param_group:
-                            self.logger.warning(f"No 'num_updates' for optimizer.")
-                            continue
-                        self.logger.warning(f"Reloading 'num_updates' and 'lr' for optimizer.")
-                        param_group['num_updates'] = data['optimizer']['param_groups'][group_id]['num_updates']
-                        param_group['lr'] = self.optimizer.get_lr_for_step(param_group['num_updates'])
+                    for optimizer in self.optimizers :
+                        for group_id, param_group in enumerate(optimizer.param_groups):
+                            if 'num_updates' not in param_group:
+                                self.logger.warning(f"No 'num_updates' for optimizer.")
+                                continue
+                            self.logger.warning(f"Reloading 'num_updates' and 'lr' for optimizer.")
+                            param_group['num_updates'] = data['optimizer']['param_groups'][group_id]['num_updates']
+                            param_group['lr'] = optimizer.get_lr_for_step(param_group['num_updates'])
 
             # reload main metrics
             self.epoch = data['epoch'] + 1
@@ -786,7 +826,9 @@ class Trainer(object):
 
         # learning rates
         s_lr = ""
-        s_lr = s_lr + (" - LR: ") + " / ".join("{:.4e}".format(group['lr']) for group in self.optimizer.param_groups)
+        s_lr = s_lr + (" - LR: ")
+        for optimizer in self.optimizers :
+            s_lr +=  " / ".join("{:.4e}".format(group['lr']) for group in optimizer.param_groups)
 
         # processing speed
         new_time = time.time()

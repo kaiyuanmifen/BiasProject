@@ -381,18 +381,22 @@ config_dic = {
     ######################## classify.py
     "train_data_file": [str, ""], 
     "val_data_file": [str, ""],
-    #"model_path": [str, ""],
-    "freeze_transformer":[bool, True],
     "version": [int, 1],
     "log_softmax": [bool, True],
-    "shuffle":[bool, False],
+    "shuffle":[bool, True],
+    "codes":[str, ""],
+    "vocab" : [str, ""],
     "min_len":[int, 1],
     "debug_num":[int, 0],
     "hidden_dim":[int, -1], 
     "gru_n_layers":[int, 1], 
     "bidirectional":[bool, False],
     "topK":[int, 3],
-    "model_path":[str, ""]
+    "model_path":[str, ""],
+    "finetune_layers":[str, ""],
+    "weighted_training":[bool, False],
+    "optimizer_e":[str, "adam,lr=0.0001"],
+    "optimizer_p":[str, "adam,lr=0.0001"]
 }
 
 def from_config_file(params):

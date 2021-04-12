@@ -40,6 +40,12 @@ class SentenceEmbedder(object):
         pretrain_params.pad_index = dico.index(PAD_WORD)
         pretrain_params.unk_index = dico.index(UNK_WORD)
         pretrain_params.mask_index = dico.index(MASK_WORD)
+        
+        if not hasattr(pretrain_params, "tim_layers_pos") :
+            # For models trained when TIM was not yet integrated : for example XLM pre-trained by facebook AI
+            setattr(pretrain_params, "dim_feedforward", pretrain_params.emb_dim*4) # https://github.com/facebookresearch/XLM/blob/master/xlm/model/transformer.py#L268
+            setattr(pretrain_params, "use_mine", params.use_mine)
+            setattr(pretrain_params, "tim_layers_pos", params.tim_layers_pos)
 
         # build model and reload weights
         model = TransformerModel(pretrain_params, dico, True, True)
@@ -73,21 +79,70 @@ class SentenceEmbedder(object):
         self.model.cuda()
 
     def get_parameters(self, layer_range):
-
-        s = layer_range.split(':')
-        assert len(s) == 2
-        i, j = int(s[0].replace('_', '-')), int(s[1].replace('_', '-'))
-
-        # negative indexing
-        i = self.n_layers + i + 1 if i < 0 else i
-        j = self.n_layers + j + 1 if j < 0 else j
-
-        # sanity check
-        assert 0 <= i <= self.n_layers
-        assert 0 <= j <= self.n_layers
-
-        if i > j:
+        """layer_range=0:_1 ===> 0 = embeddings, _1 = last encoder layer
+        Others example : 
+            0,1,6 : embeddings, first encoder layer, 6th encoder layer
+            0:4,6:8,11 : embeddings, 1-2-3-4th encoder layers,  6-7-8th encoder layers, 11 encoder layer
+        """
+        if layer_range == "" :
             return []
+        else :
+            if ":" in layer_range and not "," in layer_range :
+                s = layer_range.split(':')
+                assert len(s) == 2
+                i, j = int(s[0].replace('_', '-')), int(s[1].replace('_', '-'))
+
+                # negative indexing
+                i = self.n_layers + i + 1 if i < 0 else i
+                j = self.n_layers + j + 1 if j < 0 else j
+
+                # sanity check
+                assert 0 <= i <= self.n_layers
+                assert 0 <= j <= self.n_layers
+
+                if i > j:
+                    return []
+                
+                layers_position = range(max(i - 1, 0), j)
+                
+            elif not ":" in layer_range  : # and "," in layer_range
+                layers_position = [int(i.replace('_', '-')) for i in layer_range.split(',')]
+                # negative indexing
+                layers_position = [self.n_layers + i + 1 if i < 0 else i for i in layers_position]
+                # sanity check
+                assert all([0 <= i <= self.n_layers for i in layers_position])
+                
+                layers_position = sorted(layers_position, reverse=False)
+                i=layers_position[0]
+                if i == 0 :
+                    del layers_position[0]
+                layers_position = [i-1 for i in layers_position]
+                
+            else :
+                layers_position = []
+                for s in layer_range.split(',') :
+                    if not ':' in s :
+                        i = int(s.replace('_', '-'))
+                        i = self.n_layers + i + 1 if i < 0 else i
+                        assert 0 <= i <= self.n_layers
+                        layers_position.append(i)
+                    else :
+                        s = s.split(":")
+                        assert len(s) == 2
+                        i, j = int(s[0].replace('_', '-')), int(s[1].replace('_', '-'))
+                        # negative indexing
+                        i = self.n_layers + i + 1 if i < 0 else i
+                        j = self.n_layers + j + 1 if j < 0 else j
+                        # sanity check
+                        assert 0 <= i <= self.n_layers
+                        assert 0 <= j <= self.n_layers
+                        
+                        layers_position.extend(list(range(i, j+1)))
+
+                i=layers_position[0]
+                if i == 0 :
+                    del layers_position[0]
+                layers_position = [i-1 for i in layers_position]
 
         parameters = []
 
@@ -105,19 +160,35 @@ class SentenceEmbedder(object):
                 parameters += self.model.lang_embeddings.parameters()
                 logger.info("Adding language embedding parameters to optimizer")
             parameters += self.model.layer_norm_emb.parameters()
+
         # layers
-        for l in range(max(i - 1, 0), j):
-            parameters += self.model.attentions[l].parameters()
-            parameters += self.model.layer_norm1[l].parameters()
-            parameters += self.model.ffns[l].parameters()
-            parameters += self.model.layer_norm2[l].parameters()
-            logger.info("Adding layer-%s parameters to optimizer" % (l + 1))
+        if hasattr(self.model, 'tim_layers'):
+            m, n = 0, 0
+            for l in layers_position:
+                if l in self.model.tim_layers_pos :
+                    parameters += self.model.tim_layers[n].parameters()
+                    n+=1
+                else :
+                    parameters += self.model.attentions[m].parameters()
+                    parameters += self.model.layer_norm1[m].parameters()
+                    parameters += self.model.ffns[m].parameters()
+                    parameters += self.model.layer_norm2[m].parameters()
+                    m+=1
+                    
+                logger.info("Adding layer-%s parameters to optimizer" % (l + 1))
+        else :
+            for l in layers_position :
+                parameters += self.model.attentions[l].parameters()
+                parameters += self.model.layer_norm1[l].parameters()
+                parameters += self.model.ffns[l].parameters()
+                parameters += self.model.layer_norm2[l].parameters()
+                logger.info("Adding layer-%s parameters to optimizer" % (l + 1))
 
         logger.info("Optimizing on %i Transformer elements." % sum([p.nelement() for p in parameters]))
 
         return parameters
 
-    def get_embeddings(self, x, lengths, positions=None, langs=None):
+    def get_embeddings(self, x, lengths, positions=None, langs=None, whole_output = False):
         """
         Inputs:
             `x`        : LongTensor of shape (slen, bs)
@@ -130,8 +201,8 @@ class SentenceEmbedder(object):
         assert lengths.size(0) == bs and lengths.max().item() == slen
 
         # get transformer last hidden layer
-        tensor = self.model('fwd', x=x, lengths=lengths, positions=positions, langs=langs, causal=False)
+        tensor = self.model('fwd', x=x, lengths=lengths, positions=positions, langs=langs, causal=False)#.contiguous()
         assert tensor.size() == (slen, bs, self.out_dim)
 
         # single-vector sentence representation (first column of last layer)
-        return tensor[0]
+        return tensor[0] if not whole_output else tensor
