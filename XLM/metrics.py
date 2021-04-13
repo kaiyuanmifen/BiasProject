@@ -148,7 +148,7 @@ class Metrics():
             
         return results
 
-def get_stats(logits, y, params, inclure_pred=True):
+def get_stats(logits, y, params, inclure_pred=True, include_avg=True):
     stats = {}
 
     label_pred = logits.max(1)[1].view(-1).detach().cpu().numpy()
@@ -160,26 +160,28 @@ def get_stats(logits, y, params, inclure_pred=True):
         
     for k in range(1, params.topK+1):
         k_acc, k_f1, iou, y_pred = top_k(logits = logits.detach().cpu(), y=y, k=k)
-        stats["top%d_avg_acc"%k] = k_acc
-        stats["top%d_avg_f1_score"%k] = k_f1
-        stats["top%d_avg_IoU"%k] = iou
         stats["top%d_acc"%k] = k_acc
         stats["top%d_f1_score"%k] = k_f1
         stats["top%d_IoU"%k] = iou
+        if include_avg :
+            stats["top%d_avg_IoU"%k] = iou
+            stats["top%d_avg_acc"%k] = k_acc
+            stats["top%d_avg_f1_score"%k] = k_f1
         if inclure_pred :
             stats["top%d_label_pred"%k] = y_pred
         
     acc = get_acc(label_pred, label_id)
-    stats["avg_acc"] = acc
-    stats["acc"] = acc
-        
     f1 = f1_score_func(label_pred, label_id)
-    stats["avg_f1_score_weighted"] = f1
-    stats["f1_score_weighted"] = f1
-    
     iou = iou_func(label_pred, label_id)
-    stats["avg_IoU_weighted"] = iou
+    
+    stats["acc"] = acc
+    stats["f1_score_weighted"] = f1
     stats["IoU_weighted"] = iou
+    
+    if include_avg :
+        stats["avg_acc"] = acc
+        stats["avg_f1_score_weighted"] = f1
+        stats["avg_IoU_weighted"] = iou
 
     return stats
 
@@ -267,7 +269,7 @@ def get_score(collect, prefix, params, inv="", pl_metrics = None) :
     
     y2 = torch.cat(collect["%sy2"%inv], dim=0)
     logits = torch.cat(collect["%slogits"%inv], dim=0)
-    s = get_stats(logits, y2, params, inclure_pred=False)
+    s = get_stats(logits, y2, params, inclure_pred=False, include_avg=False)
     for k, v in s.items() :
         scores["true_%s_%s"%(prefix, k)] = v 
         

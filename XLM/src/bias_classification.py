@@ -17,6 +17,8 @@ import numpy as np
 import pandas as pd
 import random
 
+from logging import getLogger
+
 #import fastBPE
 
 from .utils import truncate, AttrDict 
@@ -35,6 +37,8 @@ special_tokens = ["<url>", "<email>", "<phone>", "<number>", "<digit>", "<cur>"]
 dico_rest=4+len(special_tokens)
 
 label_dict = {"0":0, "1":1, "2":2, "3" : 3, "4" : 4, "5" : 5}
+
+logger = getLogger()
 
 class GRU(nn.Module):
     def __init__(self, d_model, params):
@@ -60,7 +64,7 @@ class PredLayer(nn.Module):
     debug_num = 1 : Linear + Tanh + Dropout + Linear/AdaptiveLogSoftmaxWithLoss
     debug_num = 2 : GRU + Dropout + Linear/AdaptiveLogSoftmaxWithLoss
     """
-    def __init__(self, d_model, n_labels, params):
+    def __init__(self, d_model, n_labels, params, weight=None):
         super().__init__()
         self.asm = params.asm
         self.n_labels = n_labels
@@ -109,21 +113,24 @@ class PredLayer(nn.Module):
         
         else :
             if params.version == 2 :
-                if False :
-                    self.criterion = BiasClassificationLoss(softmax = params.log_softmax).to(params.device)
+                if True :
+                    #self.criterion = BiasClassificationLoss(softmax = params.log_softmax).to(params.device)
+                    self.criterion = bias_classification_loss
                 else :
-                    self.criterion = nn.BCEWithLogitsLoss().to(params.device)
+                    #self.criterion = nn.BCEWithLogitsLoss().to(params.device)
+                    self.criterion = F.binary_cross_entropy_with_logits
             else :
-                self.criterion = nn.CrossEntropyLoss().to(params.device)
+                #self.criterion = nn.CrossEntropyLoss(weight=weight, reduction='mean').to(params.device)
+                self.criterion = F.cross_entropy
 
-    def forward(self, x, y, get_scores=True):
+    def forward(self, x, y, weights = None, get_scores=True):
         """
         Compute the loss, and optionally the scores.
         """   
         x = self.proj(x)
         if self.asm is False:
             scores = x.view(-1, self.n_labels)
-            loss = self.criterion(scores, y)
+            loss = self.criterion(scores, y, weight=weights)
         else:
             _, loss = self.classifier(x, y)
             scores = self.classifier.log_prob(x) if get_scores else None
@@ -194,9 +201,10 @@ class BertClassifier(nn.Module):
         self.embedder = SentenceEmbedder(model, dico, pretrain_params) #copy.deepcopy(SentenceEmbedder(model, dico, pretrain_params))
         params.freeze_transformer = params.finetune_layers == ""
         self.freeze_transformer = params.freeze_transformer
-        #if params.freeze_transformer :
-        #    for param in self.embedder.model.parameters():
-        #        param.requires_grad = False
+        
+        if params.freeze_transformer :
+            for param in self.embedder.model.parameters():
+                param.requires_grad = False
         
         # adding missing parameters
         params.max_batch_size = 0
@@ -214,22 +222,23 @@ class BertClassifier(nn.Module):
         self.pred_layer = PredLayer(d_model, n_labels, params).to(params.device)
 
         self.whole_output = params.debug_num == 2
+        self.finetune_layers = params.finetune_layers
         
-    def forward(self, x, lengths, y, positions=None, langs=None, get_scores = True):
+    def forward(self, x, lengths, y, positions=None, langs=None, weights = None, get_scores = True):
         """
         Inputs:
             `x`        : LongTensor of shape (slen, bs)
             `lengths`  : LongTensor of shape (bs,)
         """
         h = self.embedder.get_embeddings(x, lengths, positions=positions, langs=langs, whole_output = self.whole_output)
-        return self.pred_layer(h, y)
+        return self.pred_layer(h, y, weights=weights)
 
     def get_optimizers(self, params) :
         optimizer_p = get_optimizer(self.pred_layer.parameters(), params.optimizer_p)
         if params.finetune_layers == "" :
             return [optimizer_p]
         try :
-            optimizer_e = get_optimizer(list(self.embedder.get_parameters(params.finetune_layers)), params.optimizer_e)
+            optimizer_e = get_optimizer(list(self.embedder.get_parameters(self.finetune_layers)), params.optimizer_e)
             return optimizer_e, optimizer_p
         except ValueError: #optimizer got an empty parameter list
             return [optimizer_p]
@@ -245,6 +254,22 @@ class BertClassifier(nn.Module):
     def eval(self):
         self.embedder.eval()
         self.pred_layer.eval()
+
+    def state_dict(self):
+        return {"embedder" : self.embedder.model.state_dict(), "pred_layer" : self.pred_layer.state_dict()}
+    
+    def load_state_dict(self, state_dict) :
+        assert 'embedder' in state_dict.keys() and 'pred_layer' in state_dict.keys()
+        self.embedder.model.load_state_dict(state_dict["embedder"])
+        self.pred_layer.load_state_dict(state_dict["pred_layer"])
+        
+    def parameters(self) :
+        return list(self.embedder.get_parameters(self.finetune_layers, log=False)) + list(self.pred_layer.parameters())
+
+    def to(self, device) :
+        self.embedder.model = self.embedder.model.to(device)
+        self.pred_layer = self.pred_layer.to(device)
+        return self
     
 # Below is one way to bpe-ize sentences
 #codes # path to the codes of the model
@@ -287,23 +312,25 @@ def to_bpe_py(sentences, codes : str,  vocab : str = ""):
 class BiasClassificationDataset(Dataset):
     """ Dataset class for Bias Classification"""
     labels = (0, 1, 2, 3, 4, 5)
-    def __init__(self, file, params, dico, logger, n_samples = None, min_len=1):
-        assert params.version in [1, 2]
+    def __init__(self, file, split, params, dico, logger, n_samples = None, min_len=1):
+        assert params.version in [1, 2, 3]
+        assert split in ["train", "valid", "test"]
         self.params = params
         self.dico = dico
         self.n_samples = n_samples
-        self.shuffle = params.shuffle
+        self.shuffle = params.shuffle if split == "train" else False
         self.group_by_size = params.group_by_size
         self.version = params.version
         self.in_memory = True
 
         data = [inst for inst in self.get_instances(pd.read_csv(file))]
-        sentences, labels1, labels2 = zip(*data)
         
         # remove short sentence
-        l = len(sentences)
-        sentences = [sent for sent in sentences if len(sent.split(" ")) >= min_len]
-        logger.info('Remove %d sentences of length < %d' % (l - len(sentences), min_len))
+        l = len(data)
+        data = [inst for inst in data if len(inst[0].split(" ")) >= min_len]
+        logger.info('Remove %d sentences of length < %d' % (l - len(data), min_len))
+        
+        sentences, labels1, labels2 = zip(*data)
         
         # lower
         logger.info("Do lower...")
@@ -315,8 +342,9 @@ class BiasClassificationDataset(Dataset):
         sentences = to_bpe_py(sentences, codes=params.codes, vocab = params.vocab)
         
         # check how many tokens are OOV
-        n_w = len([w for w in ' '.join(sentences).split()])
-        n_oov = len([w for w in ' '.join(sentences).split() if w not in dico.word2id])
+        corpus = ' '.join(sentences).split()
+        n_w = len([w for w in corpus])
+        n_oov = len([w for w in corpus if w not in dico.word2id])
         logger.info('Number of out-of-vocab words: %s/%s' % (n_oov, n_w))
         
         data = list(zip(sentences, labels1, labels2))
@@ -352,12 +380,16 @@ class BiasClassificationDataset(Dataset):
         columns = list(df.columns[1:]) # excapt "'Unnamed: 0'"
         rows = df.iterrows()
         if self.shuffle :
-            rows = list(rows)
-            random.shuffle(rows)
+            if self.n_samples or (not self.group_by_size and not self.n_samples) :
+                rows = list(rows)
+                random.shuffle(rows)
         if self.n_samples :
             rows = list(rows)[:self.n_samples]
         if self.group_by_size :
             rows = sorted(rows, key = lambda x : len(x[1]["content"].split()), reverse=False)
+        
+        weights = [0] * len(self.labels)
+        
         for row in rows : 
             row = row[1]
             text = row["content"]
@@ -368,15 +400,21 @@ class BiasClassificationDataset(Dataset):
             s = 1 if s == 0 else s
             if self.version == 1 :
                 label = sum([ label * conf for label, conf in  zip(b, c) ])// s
+                weights[label] = weights[label] + 1 
                 label = torch.tensor(label, dtype=torch.long)
                 yield text, label, label
-            elif self.version == 2 : 
+            elif self.version in [2, 3] : 
                 p_c = [0]*6
                 for (b_i, c_i) in zip(b, c) :
                     p_c[b_i] += c_i/s
                 label = b[np.argmax(a = c)] # the class with the maximum confidence score was used as the target
+                weights[label] = weights[label] + 1
                 yield text, torch.tensor(p_c, dtype=torch.float), torch.tensor(label, dtype=torch.long)
-                
+        
+        weights = [w + 1e-12 for w in weights]
+        weights = torch.FloatTensor([1.0 / w for w in weights])#.to(self.params.device)
+        self.weights = weights / weights.sum()
+        
     def __iter__(self): # iterator to load data
         if self.shuffle :
             random.shuffle(self.data)
@@ -434,7 +472,7 @@ def load_dataset(params, logger, dico) :
     
     if not params.eval_only :
         logger.info("Loading data from %s ..."%params.train_data_file)
-        train_dataset = BiasClassificationDataset(params.train_data_file, params, dico, 
+        train_dataset = BiasClassificationDataset(params.train_data_file, 'train', params, dico, 
                                                 logger, params.train_n_samples, min_len = params.min_len)
         setattr(params, "train_num_step", len(train_dataset))
         setattr(params, "train_num_data", train_dataset.n_samples)
@@ -443,7 +481,7 @@ def load_dataset(params, logger, dico) :
     
     logger.info("")
     logger.info("Loading data from %s ..."%params.val_data_file)
-    val_dataset = BiasClassificationDataset(params.val_data_file, params, dico, logger, params.valid_n_samples)
+    val_dataset = BiasClassificationDataset(params.val_data_file, "valid", params, dico, logger, params.valid_n_samples)
 
     logger.info("")
     logger.info("============ Data summary")
@@ -554,7 +592,7 @@ class Trainer(object):
             self.logger.info("Using nn.parallel.DistributedDataParallel ...")
             self.model = nn.parallel.DistributedDataParallel(self.model, device_ids=[params.local_rank], output_device=params.local_rank, broadcast_buffers=True)
         
-        if params.amp >= 0:
+        if params.amp >= 0 and not params.eval_only:
             self.init_amp()
             if params.multi_gpu:
                 self.logger.info("Using apex.parallel.DistributedDataParallel ...")
@@ -853,7 +891,7 @@ class Trainer(object):
         for i, batch in enumerate(self.train_data_iter):
 
             # forward / loss
-            loss, stats = get_loss(self.model, batch, self.params)
+            loss, stats = get_loss(self.model, batch, self.params, self.train_data_iter.weights)
             #loss = loss.mean() # mean() for Data Parallelism
             
             # optimize
@@ -885,7 +923,7 @@ class Trainer(object):
         total_stats = []
         with torch.no_grad(): 
             for batch in tqdm(self.val_data_iter, desc='val'):
-                _, stats = get_loss(self.model, batch, self.params) 
+                _, stats = get_loss(self.model, batch, self.params, self.val_data_iter.weights) 
                 total_stats.append(stats)
         return total_stats
     
@@ -921,7 +959,7 @@ class Trainer(object):
 #eps = torch.finfo(torch.float32).eps # 1.1920928955078125e-07
 #eps = 1e-20 # TODO : search for the smallest `eps` number under pytorch such as `torch.log(eps) != -inf`
 
-def bias_classification_loss(q_c: Tensor, p_c: Tensor, reduction : str = "mean", softmax = False) -> Tensor:
+def bias_classification_loss(q_c: Tensor, p_c: Tensor, weight = None, reduction : str = "mean", softmax = True) -> Tensor:
     r"""assume p_c, q_c is (batch_size, num_of_classes)
 
     We have implemented this version to be able to call it directly as torch.nn.functional.some_loss_
@@ -1019,9 +1057,10 @@ class BiasClassificationLoss(nn.Module):
     >>> BiasClassificationLoss(softmax=False)(q_c, p_c) 
         tensor(0.7844)
     """
-    def __init__(self, reduction: str = 'mean', softmax = False) -> None:
+    def __init__(self, weight = None, reduction: str = 'mean', softmax = False) -> None:
         super(BiasClassificationLoss, self).__init__()
         assert reduction in ["mean", "sum", "none"]
+        self.weight = weight
         self.reduction = reduction
         self.softmax = softmax
     
@@ -1029,13 +1068,4 @@ class BiasClassificationLoss(nn.Module):
         """assume p_c, q_c is (batch_size, num_of_classes)"""
         #assert torch.equal(torch.sum(p_c, dim = 1), torch.ones(bach_size, dtype=p_c.dtype))
         #assert torch.equal(torch.sum(q_c, dim = 1), torch.ones(bach_size, dtype=q_c.dtype))
-        if self.softmax :
-            CE = torch.sum(- p_c * F.log_softmax(q_c, dim = 1), dim = 1) # batch_size
-        else :
-            CE = torch.sum(- p_c * torch.log(q_c + torch.finfo(q_c.dtype).eps), dim = 1) # batch_size
-        if self.reduction == "none" :
-            return CE
-        elif self.reduction == "mean" :
-            return torch.mean(CE)
-        elif self.reduction == "sum" :
-            return torch.sum(CE)
+        return bias_classification_loss(q_c, p_c, self.weight, self.reduction, self.softmax)

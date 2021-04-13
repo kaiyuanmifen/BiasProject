@@ -78,7 +78,7 @@ class SentenceEmbedder(object):
     def cuda(self):
         self.model.cuda()
 
-    def get_parameters(self, layer_range):
+    def get_parameters(self, layer_range, log=True):
         """layer_range=0:_1 ===> 0 = embeddings, _1 = last encoder layer
         Others example : 
             0,1,6 : embeddings, first encoder layer, 6th encoder layer
@@ -150,15 +150,18 @@ class SentenceEmbedder(object):
         if i == 0:
             # embeddings
             parameters += self.model.embeddings.parameters()
-            logger.info("Adding embedding parameters to optimizer")
+            if log :
+                logger.info("Adding embedding parameters to optimizer")
             # positional embeddings
             if self.pretrain_params['sinusoidal_embeddings'] is False:
                 parameters += self.model.position_embeddings.parameters()
-                logger.info("Adding positional embedding parameters to optimizer")
+                if log :
+                    logger.info("Adding positional embedding parameters to optimizer")
             # language embeddings
             if hasattr(self.model, 'lang_embeddings'):
                 parameters += self.model.lang_embeddings.parameters()
-                logger.info("Adding language embedding parameters to optimizer")
+                if log :
+                    logger.info("Adding language embedding parameters to optimizer")
             parameters += self.model.layer_norm_emb.parameters()
 
         # layers
@@ -174,17 +177,18 @@ class SentenceEmbedder(object):
                     parameters += self.model.ffns[m].parameters()
                     parameters += self.model.layer_norm2[m].parameters()
                     m+=1
-                    
-                logger.info("Adding layer-%s parameters to optimizer" % (l + 1))
+                if log :
+                    logger.info("Adding layer-%s parameters to optimizer" % (l + 1))
         else :
             for l in layers_position :
                 parameters += self.model.attentions[l].parameters()
                 parameters += self.model.layer_norm1[l].parameters()
                 parameters += self.model.ffns[l].parameters()
                 parameters += self.model.layer_norm2[l].parameters()
-                logger.info("Adding layer-%s parameters to optimizer" % (l + 1))
-
-        logger.info("Optimizing on %i Transformer elements." % sum([p.nelement() for p in parameters]))
+                if log :
+                    logger.info("Adding layer-%s parameters to optimizer" % (l + 1))
+        if log :
+            logger.info("Optimizing on %i Transformer elements." % sum([p.nelement() for p in parameters]))
 
         return parameters
 

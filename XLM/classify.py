@@ -10,11 +10,14 @@ from src.utils import bool_flag
 from params import get_parser, from_config_file
 from metrics import get_stats, get_collect, get_score
 
-def get_loss(model, batch, params): 
+from logging import getLogger
+
+def get_loss(model, batch, params, weights): 
     (x, lengths, langs), y1, y2 = batch
-        
+    
+    y = y2 if params.version == 3 else y1
     langs = langs.to(params.device) if params.n_langs > 1 else None
-    logits, loss = model(x.to(params.device), lengths.to(params.device), y=y1.to(params.device), positions=None, langs=langs)
+    logits, loss = model(x.to(params.device), lengths.to(params.device), y=y.to(params.device), langs=langs, weights = weights)
         
     stats = {}
     n_words = lengths.sum().item()
@@ -82,8 +85,15 @@ def main(params):
     #logger.info(model.dico.word2id)
     #exit()
     
+    if not params.weighted_training :
+        train_dataset.weights = None
+        val_dataset.weights = None 
+    else :
+        train_dataset.weights = train_dataset.weights.to(params.device)
+        val_dataset.weights = val_dataset.weights.to(params.device)
+        
     # optimizers
-    optimizers = model.get_optimizers(params) 
+    optimizers = model.get_optimizers(params) if not params.eval_only else []
     
     # Trainer
     trainer = Trainer(params, model, optimizers, train_dataset, val_dataset, logger)
@@ -100,9 +110,9 @@ if __name__ == '__main__':
     parser = get_parser()
     
     parser.add_argument('--version', default=1, const=1, nargs='?',
-                        choices=[1, 2], 
+                        choices=[1, 2, 3], 
                         help=  '1 : averaging the labels with the confidence scores as weights (might be noisy) \
-                                2 : computed the coefficient of variation (CV) among annotators for \
+                                2,3 : computed the coefficient of variation (CV) among annotators for \
                                     each sample in the dataset \
                                     see bias_classification_loss.py for more informations about v2')
     
@@ -113,10 +123,10 @@ if __name__ == '__main__':
     parser.add_argument("--train_data_file", type=str, default="", help="file (.csv) containing the data")
     parser.add_argument("--val_data_file", type=str, default="", help="file (.csv) containing the data")
     
-    parser.add_argument("--shuffle", type=bool_flag, default=True, help="shuffle Dataset")
+    parser.add_argument("--shuffle", type=bool_flag, default=True, help="shuffle Dataset across epoch")
     #parser.add_argument("--group_by_size", type=bool_flag, default=True, help="Sort sentences by size during the training")
     
-    parser.add_argument("--codes", type=str, required=True, help="path of bpe code")
+    parser.add_argument("--codes", type=str, default="", help="path of bpe code")
     parser.add_argument("--vocab", type=str, default="", help="path of bpe vocab")
     
     parser.add_argument("--min_len", type=int, default=1, 
