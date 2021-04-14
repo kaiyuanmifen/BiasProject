@@ -40,22 +40,38 @@ def top_k(logits, y, k : int = 1):
     
     k_labels = torch.topk(input = logits, k = k, dim=labels_dim, largest=True, sorted=True)[1]
 
-    # True (#0) if `expected label` in k_labels, False (0) if not
-    a = ~torch.prod(input = torch.abs(y.unsqueeze(labels_dim) - k_labels), dim=labels_dim).to(torch.bool)
-    
-    # These two approaches are equivalent
-    if False :
-        y_pred = torch.empty_like(y)
-        for i in range(y.size(0)):
-            if a[i] :
-                y_pred[i] = y[i]
-            else :
-                y_pred[i] = k_labels[i][0]
-        #correct = a.to(torch.int8).numpy()
+    if y.dim() == 2 :
+        yy = torch.topk(input = y, k = k, dim=labels_dim, largest=True, sorted=True)[1]
+        yy = torch.cat([torch.abs(yy[:,i].unsqueeze(labels_dim) - k_labels) for i in range(k)], dim=labels_dim)
     else :
-        a = a.to(torch.int8)
-        y_pred = a * y + (1-a) * k_labels[:,0]
-        #correct = a.numpy()
+        yy = torch.abs(y.unsqueeze(labels_dim) - k_labels)
+    
+    # True (#0) if `expected label` in k_labels, False (0) if not
+    a = ~torch.prod(input = yy, dim=labels_dim).to(torch.bool)
+    
+    if y.dim() == 2 :
+        bs = logits.size(0)
+        correct = a.to(torch.int8).numpy()
+        acc = sum(correct)/len(correct)*100
+        y = torch.ones((bs,), dtype=y.dtype)
+        #a = a.to(torch.int8)
+        #y_pred = a * y + (1-a) * torch.zeros((bs,), dtype=y.dtype)
+        
+        return acc, 0, 0, y
+    else :
+        # These two approaches are equivalent
+        if False :
+            y_pred = torch.empty_like(y)
+            for i in range(y.size(0)):
+                if a[i] :
+                    y_pred[i] = y[i]
+                else :
+                    y_pred[i] = k_labels[i][0]
+            #correct = a.to(torch.int8).numpy()
+        else :
+            a = a.to(torch.int8)
+            y_pred = a * y + (1-a) * k_labels[:,0]
+            #correct = a.numpy()
     
     y_pred = y_pred.cpu().numpy()
     #f1 = f1_score(y_pred, y, average='weighted')*100
@@ -113,9 +129,11 @@ class Metrics():
         # array of ap for each class
         avg_precision = self.val_metrics['avg_precision'](predictions, y) 
         try :
-            results["avg_precision"] = avg_precision.item()
+            results["APc"] = avg_precision.item()
+            results["mAP"] = results["APc"] 
         except AttributeError : # 'list' object has no attribute 'item' 
-            results["avg_precision"] = [p.item() for p in avg_precision]
+            results["APc"] = [p.item() for p in avg_precision]
+            results["mAP"] = sum(results["APc"]) / len(results["APc"])
         self.val_metrics['avg_precision'].reset()
 
         return results
@@ -284,6 +302,10 @@ def get_score(collect, prefix, params, inv="", pl_metrics = None) :
         s = pl_metrics(logits, targets = y1)
         for k, v in s.items() :
             scores["%spl_multilabel_%s_%s"%(inv, prefix, k)] = v 
+            
+        for k in range(1, params.topK+1):
+            k_acc, _, _, _ = top_k(logits = logits.detach().cpu(), y=y1, k=k)
+            scores["%smultilabel_top%d_%s_acc"%(inv, k, prefix)] = k_acc
 
     if inv != "" :
         keys = scores.keys()

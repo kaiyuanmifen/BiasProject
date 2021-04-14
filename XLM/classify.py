@@ -34,7 +34,7 @@ def get_loss(model, batch, params, weights):
     stats["logits"] = logits.detach().cpu()
     stats["y2"] = y2.cpu()
     
-    if params.version == 2 :
+    if params.version in [2, 3] :
         inv_y2, inv_logits = logits.max(1)[1].view(-1).cpu(), y1.to(params.device)
         s = get_stats(inv_logits, inv_y2, params)
         #assert (s["label_pred"] == s["top%d_label_pred"%1]).all()
@@ -60,7 +60,7 @@ def end_of_epoch(stats_list, val_first = True):
         s = get_score(collect, prefix, params, inv="") 
         scores = {**scores, **s}
         
-        if params.version == 2 :   
+        if params.version in [2, 3] :   
             s = get_score(collect, prefix, params, inv="inv_") 
             scores = {**scores, **s}
  
@@ -86,10 +86,12 @@ def main(params):
     #exit()
     
     if not params.weighted_training :
-        train_dataset.weights = None
+        if not params.eval_only :
+            train_dataset.weights = None
         val_dataset.weights = None 
     else :
-        train_dataset.weights = train_dataset.weights.to(params.device)
+        if not params.eval_only :
+            train_dataset.weights = train_dataset.weights.to(params.device)
         val_dataset.weights = val_dataset.weights.to(params.device)
         
     # optimizers

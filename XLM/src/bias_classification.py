@@ -55,6 +55,25 @@ class GRU(nn.Module):
             return torch.cat((x[-2,:,:], x[-1,:,:]), dim = 1)
         else:
             return x[-1,:,:]   
+
+def init_linear(linear, in_features, is_first):
+    if is_first :
+        a  = 1 / in_features   
+    else :
+        a = np.sqrt(6 / in_features)
+        
+    with torch.no_grad():
+        linear.weight.uniform_(-a, a) 
+        
+def init_rnn(rnn):
+    # https://discuss.pytorch.org/t/initializing-rnn-gru-and-lstm-correctly/23605/2?u=pascal_notsawo
+    for name, param in rnn.named_parameters():
+        if 'weight_ih' in name:
+            torch.nn.init.xavier_uniform_(param.data)
+        elif 'weight_hh' in name:
+            torch.nn.init.orthogonal_(param.data)
+        elif 'bias' in name:
+            param.data.fill_(0)
         
 class PredLayer(nn.Module):
     """
@@ -73,6 +92,7 @@ class PredLayer(nn.Module):
             net = [nn.Dropout(params.dropout if not params.freeze_transformer else 0)]
             if params.asm is False:
                 net.append(nn.Linear(d_model, n_labels))
+                init_linear(net[-1], d_model, is_first = True)
             else :
                 in_features=d_model
         elif self.debug_num == 1 :
@@ -82,8 +102,10 @@ class PredLayer(nn.Module):
                 nn.Tanh(),
                 nn.Dropout(params.dropout)
             ]
+            init_linear(net[1], d_model, is_first = True)
             if params.asm is False:
                 net.append(nn.Linear(params.hidden_dim, n_labels))
+                init_linear(net[-1], params.hidden_dim, is_first = False)
             else :
                 in_features=params.hidden_dim
         elif self.debug_num == 2 :
@@ -92,11 +114,11 @@ class PredLayer(nn.Module):
                 GRU(d_model, params),
                 nn.Dropout(params.dropout if params.n_layers < 2 else 0)
             ]
+            init_rnn(net[1])
+            in_features = params.hidden_dim * 2 if params.bidirectional else params.hidden_dim
             if params.asm is False:
-                net.append(nn.Linear(params.hidden_dim * 2 if params.bidirectional else params.hidden_dim, 
-                                        n_labels))
-            else :
-                in_features=params.hidden_dim * 2 if params.bidirectional else params.hidden_dim
+                net.append(nn.Linear(in_features, n_labels))
+                init_linear(net[-1], in_features, is_first = False)
         else :
             raise NotImplementedError("debug_num = %d not found"%(self.debug_num))
         
@@ -230,7 +252,12 @@ class BertClassifier(nn.Module):
             `x`        : LongTensor of shape (slen, bs)
             `lengths`  : LongTensor of shape (bs,)
         """
-        h = self.embedder.get_embeddings(x, lengths, positions=positions, langs=langs, whole_output = self.whole_output)
+        if self.freeze_transformer :
+            with torch.no_grad():
+                h = self.embedder.get_embeddings(x, lengths, positions=positions, langs=langs, whole_output = self.whole_output)
+        else :
+            h = self.embedder.get_embeddings(x, lengths, positions=positions, langs=langs, whole_output = self.whole_output)
+        
         return self.pred_layer(h, y, weights=weights)
 
     def get_optimizers(self, params) :
@@ -435,7 +462,7 @@ class BiasClassificationDataset(Dataset):
             assert type(sentences) in [list, tuple]
         
         # These two approaches are equivalent
-        if False :
+        if True :
             word_ids = [torch.LongTensor([self.dico.index(w) for w in s.strip().split()]) for s in sentences]
             lengths = torch.LongTensor([len(s) + 2 for s in word_ids])
             batch = torch.LongTensor(lengths.max().item(), lengths.size(0)).fill_(self.params.pad_index)
@@ -866,7 +893,7 @@ class Trainer(object):
         s_lr = ""
         s_lr = s_lr + (" - LR: ")
         for optimizer in self.optimizers :
-            s_lr +=  " / ".join("{:.4e}".format(group['lr']) for group in optimizer.param_groups)
+            s_lr += " " + " / ".join("{:.4e}".format(group['lr']) for group in optimizer.param_groups)
 
         # processing speed
         new_time = time.time()
@@ -1005,10 +1032,21 @@ def bias_classification_loss(q_c: Tensor, p_c: Tensor, weight = None, reduction 
     #assert torch.equal(torch.sum(p_c, dim = 1), torch.ones(bach_size, dtype=p_c.dtype))
     #assert torch.equal(torch.sum(q_c, dim = 1), torch.ones(bach_size, dtype=q_c.dtype))
     
-    if softmax :
-        CE = torch.sum(- p_c * F.log_softmax(q_c, dim = 1), dim = 1) # batch_size
+    if weight is None :
+        weight = torch.ones_like(p_c)
     else :
-        CE = torch.sum(- p_c * torch.log(q_c + torch.finfo(q_c.dtype).eps), dim = 1) # batch_size
+        if weight.dim() == 1 :
+            assert list(weight.shape) == [p_c.size(1)]
+            weight = weight.expand_as(p_c) 
+        elif weight.dim() == 2 :
+            assert weight.shape == p_c.shape
+        else :
+            raise RuntimeError("weight.shape incorrect")
+    
+    if softmax :
+        CE = torch.sum(- weight * p_c * F.log_softmax(q_c, dim = 1), dim = 1) # batch_size
+    else :
+        CE = torch.sum(- weight * p_c * torch.log(q_c + torch.finfo(q_c.dtype).eps), dim = 1) # batch_size
     if reduction == "none" :
         return CE
     elif reduction == "mean" :
