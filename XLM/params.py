@@ -1,3 +1,10 @@
+# Copyright (c) 2021-present, Pascal Tikeng, MILA.
+# All rights reserved.
+#
+# This source code is licensed under the license found in the
+# LICENSE file in the root directory of this source tree.
+#
+
 import argparse 
 import os
 import json
@@ -381,6 +388,8 @@ config_dic = {
     ######################## classify.py
     "train_data_file": [str, ""], 
     "val_data_file": [str, ""],
+    "data_columns":[str, ""],
+    "n_labels" : [int, 6],
     "version": [int, 1],
     "log_softmax": [bool, True],
     "shuffle":[bool, True],
@@ -393,6 +402,8 @@ config_dic = {
     "bidirectional":[bool, False],
     "topK":[int, 3],
     "model_path":[str, ""],
+    "google_bert":[bool, False],
+    "bert_model_name":[str, "bert-base-uncased"],
     "finetune_layers":[str, ""],
     "weighted_training":[bool, False],
     "optimizer_e":[str, "adam,lr=0.0001"],

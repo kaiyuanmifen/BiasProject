@@ -78,6 +78,14 @@ def set_dico_parameters(params, data, dico):
     Update dictionary parameters.
     """
     if 'dico' in data:
+        """
+        try :
+            assert data['dico'] == dico
+        except AttributeError: #'Dictionary' object has no attribute 'rest'
+            setattr(dico, "rest", 4)
+            setattr(data['dico'], "rest", 4)
+            assert data['dico'] == dico
+        """
         assert data['dico'] == dico
     else:
         data['dico'] = dico

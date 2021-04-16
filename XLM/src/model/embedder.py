@@ -1,4 +1,5 @@
 # Copyright (c) 2019-present, Facebook, Inc.
+# Copyright (c) 2021-present, Pascal Tikeng, MILA.
 # All rights reserved.
 #
 # This source code is licensed under the license found in the
@@ -15,6 +16,65 @@ from ..utils import AttrDict
 
 logger = getLogger()
 
+def get_layers_positions(layer_range, n_layers) :
+    if layer_range == "" :
+        return None, []
+    if ":" in layer_range and not "," in layer_range :
+        s = layer_range.split(':')
+        assert len(s) == 2
+        i, j = int(s[0].replace('_', '-')), int(s[1].replace('_', '-'))
+
+        # negative indexing
+        i = n_layers + i + 1 if i < 0 else i
+        j = n_layers + j + 1 if j < 0 else j
+
+        # sanity check
+        assert 0 <= i <= n_layers
+        assert 0 <= j <= n_layers
+
+        if i > j:
+            return None, []
+                
+        return i, range(max(i - 1, 0), j)
+                
+    elif not ":" in layer_range  : # and "," in layer_range
+        layers_position = [int(i.replace('_', '-')) for i in layer_range.split(',')]
+        # negative indexing
+        layers_position = [n_layers + i + 1 if i < 0 else i for i in layers_position]
+        # sanity check
+        assert all([0 <= i <= n_layers for i in layers_position])
+                
+        layers_position = sorted(layers_position, reverse=False)
+        i=layers_position[0]
+        if i == 0 :
+            del layers_position[0]
+        return i, [i-1 for i in layers_position]
+                
+    else :
+        layers_position = []
+        for s in layer_range.split(',') :
+            if not ':' in s :
+                i = int(s.replace('_', '-'))
+                i = n_layers + i + 1 if i < 0 else i
+                assert 0 <= i <= n_layers
+                layers_position.append(i)
+            else :
+                s = s.split(":")
+                assert len(s) == 2
+                i, j = int(s[0].replace('_', '-')), int(s[1].replace('_', '-'))
+                # negative indexing
+                i = n_layers + i + 1 if i < 0 else i
+                j = n_layers + j + 1 if j < 0 else j
+                # sanity check
+                assert 0 <= i <= n_layers
+                assert 0 <= j <= n_layers
+                        
+                layers_position.extend(list(range(i, j+1)))
+
+        i=layers_position[0]
+        if i == 0 :
+            del layers_position[0]
+        return i, [i-1 for i in layers_position]
 
 class SentenceEmbedder(object):
 
@@ -84,65 +144,9 @@ class SentenceEmbedder(object):
             0,1,6 : embeddings, first encoder layer, 6th encoder layer
             0:4,6:8,11 : embeddings, 1-2-3-4th encoder layers,  6-7-8th encoder layers, 11 encoder layer
         """
-        if layer_range == "" :
+        i, layers_position = get_layers_positions(layer_range, self.n_layers)
+        if i is None :
             return []
-        else :
-            if ":" in layer_range and not "," in layer_range :
-                s = layer_range.split(':')
-                assert len(s) == 2
-                i, j = int(s[0].replace('_', '-')), int(s[1].replace('_', '-'))
-
-                # negative indexing
-                i = self.n_layers + i + 1 if i < 0 else i
-                j = self.n_layers + j + 1 if j < 0 else j
-
-                # sanity check
-                assert 0 <= i <= self.n_layers
-                assert 0 <= j <= self.n_layers
-
-                if i > j:
-                    return []
-                
-                layers_position = range(max(i - 1, 0), j)
-                
-            elif not ":" in layer_range  : # and "," in layer_range
-                layers_position = [int(i.replace('_', '-')) for i in layer_range.split(',')]
-                # negative indexing
-                layers_position = [self.n_layers + i + 1 if i < 0 else i for i in layers_position]
-                # sanity check
-                assert all([0 <= i <= self.n_layers for i in layers_position])
-                
-                layers_position = sorted(layers_position, reverse=False)
-                i=layers_position[0]
-                if i == 0 :
-                    del layers_position[0]
-                layers_position = [i-1 for i in layers_position]
-                
-            else :
-                layers_position = []
-                for s in layer_range.split(',') :
-                    if not ':' in s :
-                        i = int(s.replace('_', '-'))
-                        i = self.n_layers + i + 1 if i < 0 else i
-                        assert 0 <= i <= self.n_layers
-                        layers_position.append(i)
-                    else :
-                        s = s.split(":")
-                        assert len(s) == 2
-                        i, j = int(s[0].replace('_', '-')), int(s[1].replace('_', '-'))
-                        # negative indexing
-                        i = self.n_layers + i + 1 if i < 0 else i
-                        j = self.n_layers + j + 1 if j < 0 else j
-                        # sanity check
-                        assert 0 <= i <= self.n_layers
-                        assert 0 <= j <= self.n_layers
-                        
-                        layers_position.extend(list(range(i, j+1)))
-
-                i=layers_position[0]
-                if i == 0 :
-                    del layers_position[0]
-                layers_position = [i-1 for i in layers_position]
 
         parameters = []
 

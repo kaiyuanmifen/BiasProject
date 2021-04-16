@@ -1,3 +1,10 @@
+# Copyright (c) 2021-present, Pascal Tikeng, MILA.
+# All rights reserved.
+#
+# This source code is licensed under the license found in the
+# LICENSE file in the root directory of this source tree.
+#
+
 from torch.utils.data import Dataset
 from torch import Tensor
 import torch
@@ -15,18 +22,22 @@ import copy
 from collections import OrderedDict
 import numpy as np
 import pandas as pd
+from pandas.io.parsers import ParserError
+import matplotlib.pyplot as plt
 import random
 
 from logging import getLogger
 
 #import fastBPE
 
-from .utils import truncate, AttrDict 
-from .optim import get_optimizer
-from .data.dictionary import Dictionary, BOS_WORD, EOS_WORD, PAD_WORD, UNK_WORD, MASK_WORD
-from .model.transformer import TransformerModel
-from .model.embedder import SentenceEmbedder
-from .trainer import Trainer as MainTrainer
+#from transformers import BertModel, BertTokenizer
+from .utils import to_bpe_py, to_bpe_cli, get_data_path, path_leaf 
+from ..utils import truncate, AttrDict
+from ..optim import get_optimizer
+from ..data.dictionary import Dictionary, BOS_WORD, EOS_WORD, PAD_WORD, UNK_WORD, MASK_WORD
+from ..model.transformer import TransformerModel
+from ..model.embedder import SentenceEmbedder, get_layers_positions
+from ..trainer import Trainer as MainTrainer
 
 #git clone https://github.com/NVIDIA/apex
 #pip install -v --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" ./apex
@@ -35,8 +46,6 @@ from .trainer import Trainer as MainTrainer
 # bias corpus
 special_tokens = ["<url>", "<email>", "<phone>", "<number>", "<digit>", "<cur>"]
 dico_rest=4+len(special_tokens)
-
-label_dict = {"0":0, "1":1, "2":2, "3" : 3, "4" : 4, "5" : 5}
 
 logger = getLogger()
 
@@ -50,13 +59,14 @@ class GRU(nn.Module):
     def forward(self, x):
         # x : (input_seq_len, batch_size, d_model)
         x = x.transpose(0, 1) # (batch_size, input_seq_len, d_model)
-        _, x = self.rnn(self.drop(x)) # [n layers * n directions, batch size, emb dim]
+        _, x = self.rnn(self.drop(x)) # [n_layers * n_directions, batch_size, d_model]
         if self.rnn.bidirectional:
             return torch.cat((x[-2,:,:], x[-1,:,:]), dim = 1)
         else:
             return x[-1,:,:]   
 
 def init_linear(linear, in_features, is_first):
+    # Inspired from Sitzmann et al. (2020), Implicit Neural Representations with Periodic Activation Functions. arXiv: 2006.09661 [cs.CV]
     if is_first :
         a  = 1 / in_features   
     else :
@@ -67,13 +77,14 @@ def init_linear(linear, in_features, is_first):
         
 def init_rnn(rnn):
     # https://discuss.pytorch.org/t/initializing-rnn-gru-and-lstm-correctly/23605/2?u=pascal_notsawo
-    for name, param in rnn.named_parameters():
-        if 'weight_ih' in name:
-            torch.nn.init.xavier_uniform_(param.data)
-        elif 'weight_hh' in name:
-            torch.nn.init.orthogonal_(param.data)
-        elif 'bias' in name:
-            param.data.fill_(0)
+    with torch.no_grad():
+        for name, param in rnn.named_parameters():
+            if 'weight_ih' in name:
+                torch.nn.init.xavier_uniform_(param.data)
+            elif 'weight_hh' in name:
+                torch.nn.init.orthogonal_(param.data)
+            elif 'bias' in name:
+                param.data.fill_(0)
         
 class PredLayer(nn.Module):
     """
@@ -134,7 +145,7 @@ class PredLayer(nn.Module):
             )
         
         else :
-            if params.version == 2 :
+            if params.version in [2, 4] :
                 if True :
                     #self.criterion = BiasClassificationLoss(softmax = params.log_softmax).to(params.device)
                     self.criterion = bias_classification_loss
@@ -245,6 +256,7 @@ class BertClassifier(nn.Module):
 
         self.whole_output = params.debug_num == 2
         self.finetune_layers = params.finetune_layers
+        self.params = params
         
     def forward(self, x, lengths, y, positions=None, langs=None, weights = None, get_scores = True):
         """
@@ -258,7 +270,16 @@ class BertClassifier(nn.Module):
         else :
             h = self.embedder.get_embeddings(x, lengths, positions=positions, langs=langs, whole_output = self.whole_output)
         
-        return self.pred_layer(h, y, weights=weights)
+        if True :
+            return self.pred_layer(h, y, weights=weights)
+        else :
+            # L2 reg : weight_decay in optim handle this
+            scores, loss = self.pred_layer(h, y, weights=weights)
+            l2_lambda = 0.01
+            l2_reg = 0
+            for param in self.parameters():
+                l2_reg += torch.norm(param)
+            return scores, loss + l2_lambda * l2_reg
 
     def get_optimizers(self, params) :
         optimizer_p = get_optimizer(self.pred_layer.parameters(), params.optimizer_p)
@@ -297,164 +318,7 @@ class BertClassifier(nn.Module):
         self.embedder.model = self.embedder.model.to(device)
         self.pred_layer = self.pred_layer.to(device)
         return self
-    
-# Below is one way to bpe-ize sentences
-#codes # path to the codes of the model
-#vocab (optional) # path to the vocab of the model
-def to_bpe_cli(sentences, codes : str, logger, vocab : str = "", fastbpe = os.path.join(os.getcwd(), 'tools/fastBPE/fast')):
-    """Sentences have to be in the BPE format, i.e. tokenized sentences on which you applied fastBPE.
-    https://github.com/facebookresearch/XLM/blob/master/generate-embeddings.ipynb
-    
-    installation :
-    git clone https://github.com/glample/fastBPE tools/fastBPE && cd tools/fastBPE && g++ -std=c++11 -pthread -O3 fastBPE/main.cc -IfastBPE -o fast
-    """
-    # write sentences to tmp file
-    tmp_file1 = './tmp_sentences.txt'
-    tmp_file2 = './tmp_sentences.bpe'
-    with open(tmp_file1, 'w') as fwrite:
-        for sent in sentences:
-            fwrite.write(sent + '\n')
-    
-    # apply bpe to tmp file
-    os.system('%s applybpe %s %s %s %s' % (fastbpe, tmp_file2, tmp_file1, codes, vocab))
-    
-    # load bpe-ized sentences
-    sentences_bpe = []
-    with open(tmp_file2) as f:
-        for line in f:
-            sentences_bpe.append(line.rstrip())
-    
-    logger.info("Delete %s and %s"%(tmp_file1, tmp_file2))
-    os.remove(tmp_file1)
-    os.remove(tmp_file2)
-    
-    return sentences_bpe
 
-def to_bpe_py(sentences, codes : str,  vocab : str = ""):
-    """Sentences have to be in the BPE format, i.e. tokenized sentences on which you applied fastBPE.
-    installation : pip install fastbpe"""
-    import fastBPE
-    return fastBPE.fastBPE(codes, vocab).apply(sentences)
-
-class BiasClassificationDataset(Dataset):
-    """ Dataset class for Bias Classification"""
-    labels = (0, 1, 2, 3, 4, 5)
-    def __init__(self, file, split, params, dico, logger, n_samples = None, min_len=1):
-        assert params.version in [1, 2, 3]
-        assert split in ["train", "valid", "test"]
-        self.params = params
-        self.dico = dico
-        self.n_samples = n_samples
-        self.shuffle = params.shuffle if split == "train" else False
-        self.group_by_size = params.group_by_size
-        self.version = params.version
-        self.in_memory = True
-
-        data = [inst for inst in self.get_instances(pd.read_csv(file))]
-        
-        # remove short sentence
-        l = len(data)
-        data = [inst for inst in data if len(inst[0].split(" ")) >= min_len]
-        logger.info('Remove %d sentences of length < %d' % (l - len(data), min_len))
-        
-        sentences, labels1, labels2 = zip(*data)
-        
-        # lower
-        logger.info("Do lower...")
-        sentences = [s.lower() for s in sentences]
-        
-        # bpe-ize sentences
-        logger.info("bpe-ize sentences...")
-        #sentences = to_bpe_cli(sentences, codes=params.codes, logger = logger, vocab = params.vocab)
-        sentences = to_bpe_py(sentences, codes=params.codes, vocab = params.vocab)
-        
-        # check how many tokens are OOV
-        corpus = ' '.join(sentences).split()
-        n_w = len([w for w in corpus])
-        n_oov = len([w for w in corpus if w not in dico.word2id])
-        logger.info('Number of out-of-vocab words: %s/%s' % (n_oov, n_w))
-        
-        data = list(zip(sentences, labels1, labels2))
-
-        self.n_samples = len(data)
-        self.batch_size = self.n_samples if self.params.batch_size > self.n_samples else self.params.batch_size
-        
-        if self.in_memory :
-            i = 0
-            tmp = []
-            while self.n_samples > i :
-                i += self.batch_size
-                x, y1, y2 = zip(*data[i-self.batch_size:i])
-                tmp.append((self.to_tensor(x), torch.stack(y1), torch.stack(y2)))
-            self.data = tmp
-        else :
-            self.data = data
-        
-    def __len__(self):
-        if self.in_memory :
-            return self.n_samples // self.batch_size
-        else :
-            return self.n_samples
-
-    def __getitem__(self, index):
-        if not self.in_memory :
-            x, y1, y2 = self.data[index]
-            return self.to_tensor(x), y1, y2
-        else :
-            return self.data[index]
-    
-    def get_instances(self, df):
-        columns = list(df.columns[1:]) # excapt "'Unnamed: 0'"
-        rows = df.iterrows()
-        if self.shuffle :
-            if self.n_samples or (not self.group_by_size and not self.n_samples) :
-                rows = list(rows)
-                random.shuffle(rows)
-        if self.n_samples :
-            rows = list(rows)[:self.n_samples]
-        if self.group_by_size :
-            rows = sorted(rows, key = lambda x : len(x[1]["content"].split()), reverse=False)
-        
-        weights = [0] * len(self.labels)
-        
-        for row in rows : 
-            row = row[1]
-            text = row["content"]
-            b = [row['answerForQ1.Worker1'], row['answerForQ1.Worker2'], row['answerForQ1.Worker3']]
-            c = [row['answerForQ2.Worker1'], row['answerForQ2.Worker2'], row['answerForQ2.Worker3']]
-            
-            s = sum(c)
-            s = 1 if s == 0 else s
-            if self.version == 1 :
-                label = sum([ label * conf for label, conf in  zip(b, c) ])// s
-                weights[label] = weights[label] + 1 
-                label = torch.tensor(label, dtype=torch.long)
-                yield text, label, label
-            elif self.version in [2, 3] : 
-                p_c = [0]*6
-                for (b_i, c_i) in zip(b, c) :
-                    p_c[b_i] += c_i/s
-                label = b[np.argmax(a = c)] # the class with the maximum confidence score was used as the target
-                weights[label] = weights[label] + 1
-                yield text, torch.tensor(p_c, dtype=torch.float), torch.tensor(label, dtype=torch.long)
-        
-        weights = [w + 1e-12 for w in weights]
-        weights = torch.FloatTensor([1.0 / w for w in weights])#.to(self.params.device)
-        self.weights = weights / weights.sum()
-        
-    def __iter__(self): # iterator to load data
-        if self.shuffle :
-            random.shuffle(self.data)
-        if not self.in_memory :
-            i = 0
-            while self.n_samples > i :
-                i += self.batch_size
-                x, y1, y2 = zip(*self.data[i-self.batch_size:i])
-                yield self.to_tensor(x), torch.stack(y1), torch.stack(y2)
-        else :
-            for batch in self.data :
-                yield batch
-            
     def to_tensor(self, sentences):
         if type(sentences) == str :
             sentences = [sentences]
@@ -482,8 +346,6 @@ class BiasClassificationDataset(Dataset):
             word_ids = torch.LongTensor(slen, bs).fill_(self.params.pad_index)
             for i in range(bs):
                 sent = torch.LongTensor([self.dico.index(w) for w in sentences[i]])
-                #a = self.dico.ids_to_words(sent.numpy())
-                #print(sent, sentences[i], a)
                 word_ids[:len(sent), i] = sent
                 
             lengths = torch.LongTensor([len(sent) for sent in sentences])
@@ -493,13 +355,323 @@ class BiasClassificationDataset(Dataset):
             word_ids, lengths = truncate(word_ids, lengths, self.params.max_len, self.params.eos_index)
             return word_ids, lengths, langs
         
-def load_dataset(params, logger, dico) :
+class GoogleBertClassifier(nn.Module):
+
+    def __init__(self, n_labels, params, logger):
+        super().__init__()
+        from transformers import BertModel, BertTokenizer
+        
+        model_name = params.bert_model_name
+        logger.warning("Reload BertModel")
+        embedder = BertModel.from_pretrained(model_name) # load the pre-trained model
+        embedder.eval()
+        self.embedder = embedder.to(params.device)
+        params.freeze_transformer = params.finetune_layers == ""
+        self.freeze_transformer = params.freeze_transformer
+        if params.freeze_transformer :
+            for param in self.embedder.parameters():
+                param.requires_grad = False
+
+        logger.warning("Reload  BertTokenizer")
+        tokenizer = BertTokenizer.from_pretrained(model_name)
+        self.tokenizer = tokenizer
+        max_input_length = self.tokenizer.max_model_input_sizes[model_name]
+        self.max_input_length = min(max_input_length, params.max_len)
+
+        params.bos_index = tokenizer.cls_token_id
+        params.eos_index = tokenizer.sep_token_id
+        params.pad_index = tokenizer.pad_token_id
+        params.unk_index = tokenizer.unk_token_id
+        #params.mask_index = tokenizer.TODO
+        params.n_words = len(self.tokenizer.vocab)
+        params.n_langs = 1
+        
+        d_model = self.embedder.config.to_dict()['hidden_size']
+        params.hidden_dim = d_model if params.hidden_dim == -1 else params.hidden_dim
+        self.pred_layer = PredLayer(d_model, n_labels, params).to(params.device)
+
+        self.whole_output = params.debug_num == 2
+        self.finetune_layers = params.finetune_layers
+        self.params = params
+        self.logger = logger
+        
+    def forward(self, x, lengths, y, positions=None, langs=None, weights = None, get_scores = True):
+        """
+        Inputs:
+            `x`        : LongTensor of shape (bs, slen)
+        """
+        if self.freeze_transformer :
+            with torch.no_grad():
+                h = self.embedder(x)[0] # [batch size, sent len, emb dim]
+        else :
+            h = self.embedder(x)[0] 
+        
+        return self.pred_layer(h.transpose(0, 1) if self.whole_output else h[:, 0], y, weights=weights)
+
+    def get_embedder_parameters(self, layer_range, log=True) :
+        n_layers = len(self.embedder.encoder.layer)
+        i, layers_position = get_layers_positions(layer_range, n_layers)
+        
+        if i is None :
+            return []
+
+        parameters = []
+        
+        if i == 0:
+            # embeddings
+            parameters += self.embedder.embeddings.parameters()
+            if log :
+                self.logger.info("Adding embedding parameters to optimizer")
+        for l in layers_position :
+            parameters += self.embedder.encoder.layer[l].parameters()
+            if log :
+                self.logger.info("Adding layer-%s parameters to optimizer" % (l + 1))
+
+        return parameters
+
+    def get_optimizers(self, params) :
+        optimizer_p = get_optimizer(self.pred_layer.parameters(), params.optimizer_p)
+        if params.finetune_layers == "" :
+            return [optimizer_p]
+        try :
+            optimizer_e = get_optimizer(self.get_embedder_parameters(self.finetune_layers), params.optimizer_e)
+            return optimizer_e, optimizer_p
+        except ValueError: #optimizer got an empty parameter list
+            return [optimizer_p]
+        
+    def train(self):
+        if not self.freeze_transformer :
+            self.embedder.train()
+        self.pred_layer.train()
+
+    def eval(self):
+        self.embedder.eval()
+        self.pred_layer.eval()
+
+    def state_dict(self):
+        return {"embedder" : self.embedder.state_dict(), "pred_layer" : self.pred_layer.state_dict()}
+    
+    def load_state_dict(self, state_dict) :
+        assert 'embedder' in state_dict.keys() and 'pred_layer' in state_dict.keys()
+        self.embedder.load_state_dict(state_dict["embedder"])
+        self.pred_layer.load_state_dict(state_dict["pred_layer"])
+
+    def parameters(self) :
+        return list(self.get_embedder_parameters(self.finetune_layers, log=False)) + list(self.pred_layer.parameters())
+
+    def to(self, device) :
+        self.embedder = self.embedder.to(device)
+        self.pred_layer = self.pred_layer.to(device)
+        return self
+
+    def tokenize_and_cut(self, sentence):
+        tokens = self.tokenizer.tokenize(sentence) 
+        tokens = tokens[:self.max_input_length-2]
+        return [self.tokenizer.cls_token_id] + self.tokenizer.convert_tokens_to_ids(tokens) + [self.tokenizer.sep_token_id]
+
+    def to_tensor(self, sentences):
+        if type(sentences) == str :
+            sentences = [sentences]
+        else :
+            assert type(sentences) in [list, tuple]
+
+        sentences = [self.tokenize_and_cut(s) for s in sentences]
+        bs = len(sentences)
+        slen = max([len(sent) for sent in sentences])
+        word_ids = torch.LongTensor(bs, slen).fill_(self.tokenizer.pad_token_id)
+        for i in range(bs):
+            sent = torch.LongTensor(sentences[i])
+            word_ids[i,:len(sent)] = sent
+        lengths = torch.LongTensor([len(s) for s in word_ids])
+        langs = None
+        return word_ids, lengths, langs
+
+class BiasClassificationDataset(Dataset):
+    """ Dataset class for Bias Classification"""
+    def __init__(self, file, split, params, model, logger, n_samples = None, min_len=1):
+        assert params.version in [1, 2, 3, 4]
+        assert split in ["train", "valid", "test"]
+        
+        # For large data, it is necessary to process them only once
+        data_path = get_data_path(params, file, n_samples)
+        if os.path.isfile(data_path) :
+            logger.info("Loading data from %s ..."%data_path)
+            loaded_self = torch.load(data_path)
+            for attr_name in dir(loaded_self) :
+                try :
+                    setattr(self, attr_name, getattr(loaded_self, attr_name))
+                except AttributeError :
+                    pass
+            return
+        
+        logger.info("Loading data from %s ..."%file)
+
+        self.params = params
+        self.to_tensor = model.to_tensor
+        self.n_samples = n_samples
+        self.shuffle = params.shuffle if split == "train" else False
+        self.group_by_size = params.group_by_size
+        self.version = params.version
+        self.in_memory = True
+        
+        if params.data_columns == "" :
+            # assume is bias classification
+            num_workers = 3
+            self.text_column = "content"
+            self.scores_columns = ['answerForQ1.Worker%d'%(k+1) for k in range(num_workers)]
+            self.confidence_columns = ['answerForQ2.Worker%d'%(k+1) for k in range(num_workers)]
+        else :
+            # "content,scores_columns1-scores_columns2...,confidence_columns1-confidence_columns2..."
+            """
+            For text classification tasks other than bias classification. 
+            Just make sure that the scores_columns matches the label, 
+            and choose version 1 or 4 (4 is more stable and allows the model to converge quickly, we control the loss function)
+            """
+            data_columns = params.data_columns.split(",")
+            assert len(data_columns) >= 2
+            self.text_column = data_columns[0]
+            self.scores_columns = data_columns[1].split("-")
+            if len(data_columns) > 2 :
+                self.confidence_columns = data_columns[2].split("-")
+                assert len(self.scores_columns) == len(self.confidence_columns)
+            else :
+                assert len(self.scores_columns) == 1
+                self.confidence_columns = []
+                
+        try :
+            data = [inst for inst in self.get_instances(pd.read_csv(file))]
+        except ParserError : # https://stackoverflow.com/questions/33998740/error-in-reading-a-csv-file-in-pandascparsererror-error-tokenizing-data-c-err
+            data = [inst for inst in self.get_instances(pd.read_csv(file, lineterminator='\n'))]
+        
+        # remove short sentence
+        l = len(data)
+        data = [inst for inst in data if len(inst[0].split(" ")) >= min_len]
+        logger.info('Remove %d sentences of length < %d' % (l - len(data), min_len))
+        
+        sentences, labels1, labels2 = zip(*data)
+        
+        # lower
+        logger.info("Do lower...")
+        sentences = [s.lower() for s in sentences]
+        
+        if not params.google_bert :
+            # bpe-ize sentences
+            logger.info("bpe-ize sentences...")
+            #sentences = to_bpe_cli(sentences, codes=params.codes, logger = logger, vocab = params.vocab)
+            sentences = to_bpe_py(sentences, codes=params.codes, vocab = params.vocab)
+        
+        # check how many tokens are OOV
+        if not params.google_bert :
+            corpus = ' '.join(sentences).split()
+            n_w = len([w for w in corpus])
+            n_oov = len([w for w in corpus if w not in model.dico.word2id])
+        else :
+            corpus = model.tokenizer.tokenize(' '.join(sentences))
+            n_w = len([w for w in corpus])
+            n_oov = len([w for w in corpus if w not in model.tokenizer.vocab]) 
+        p = n_oov/(n_w+1e-12)
+        logger.info('Number of out-of-vocab words: %s/%s = %s %s' % (n_oov, n_w, p*100, "%"))
+        
+        data = list(zip(sentences, labels1, labels2))
+
+        self.n_samples = len(data)
+        self.batch_size = self.n_samples if self.params.batch_size > self.n_samples else self.params.batch_size
+        
+        if self.in_memory :
+            i = 0
+            tmp = []
+            while self.n_samples > i :
+                i += self.batch_size
+                x, y1, y2 = zip(*data[i-self.batch_size:i])
+                tmp.append((self.to_tensor(x), torch.stack(y1), torch.stack(y2)))
+            self.data = tmp
+        else :
+            self.data = data
+        
+        # For large data, it is necessary to process them only once
+        torch.save(self, data_path)
+        
+    def __len__(self):
+        if self.in_memory :
+            return self.n_samples // self.batch_size
+        else :
+            return self.n_samples
+
+    def __getitem__(self, index):
+        if not self.in_memory :
+            x, y1, y2 = self.data[index]
+            return self.to_tensor(x), y1, y2
+        else :
+            return self.data[index]
+    
+    def get_instances(self, df):
+        columns = list(df.columns[1:]) # excapt "'Unnamed: 0'"
+        rows = df.iterrows()
+        if self.shuffle :
+            if self.n_samples or (not self.group_by_size and not self.n_samples) :
+                rows = list(rows)
+                random.shuffle(rows)
+        if self.n_samples :
+            rows = list(rows)[:self.n_samples]
+        if self.group_by_size :
+            rows = sorted(rows, key = lambda x : len(x[1][self.text_column].split()), reverse=False)
+        
+        weights = [0] * self.params.n_labels
+        
+        for row in rows : 
+            row = row[1]
+            text = row[self.text_column]
+            b = [row[col] for col in self.scores_columns]
+            c = [row[col] for col in self.confidence_columns] if self.confidence_columns else [1] # Give a score of 1 to the label
+            
+            s = sum(c)
+            s = 1 if s == 0 else s
+            if self.version == 1 :
+                #  label the average of the scores with the confidence scores as weighting
+                label = int(round(sum([ score * conf for score, conf in  zip(b, c) ]) / s))
+                weights[label] = weights[label] + 1 
+                label = torch.tensor(label, dtype=torch.long)
+                yield text, label, label
+            elif self.version in [2, 3, 4] : 
+                p_c = [0]*self.params.n_labels
+                for (b_i, c_i) in zip(b, c) :
+                    p_c[b_i] += c_i/s
+                if self.version == 4 :
+                    #  label the average of the scores with the confidence scores as weighting
+                    label = int(round(sum([ score * conf for score, conf in  zip(b, c) ]) / s))
+                else :
+                    # the class with the maximum confidence score was used as the target
+                    label = b[np.argmax(a = c)] 
+                weights[label] = weights[label] + 1
+                yield text, torch.tensor(p_c, dtype=torch.float), torch.tensor(label, dtype=torch.long)
+        
+        if self.params.weighted_training :
+            weights = [w + 1e-12 for w in weights]
+            weights = torch.FloatTensor([1.0 / w for w in weights])
+            weights = weights / weights.sum()
+            self.weights = weights.to(self.params.device)
+        else :
+            self.weights = None
+        
+    def __iter__(self): # iterator to load data
+        if self.shuffle :
+            random.shuffle(self.data)
+        if not self.in_memory :
+            i = 0
+            while self.n_samples > i :
+                i += self.batch_size
+                x, y1, y2 = zip(*self.data[i-self.batch_size:i])
+                yield self.to_tensor(x), torch.stack(y1), torch.stack(y2)
+        else :
+            for batch in self.data :
+                yield batch
+        
+def load_dataset(params, logger, model) :
     params.train_n_samples = None if params.train_n_samples==-1 else params.train_n_samples
     params.valid_n_samples = None if params.valid_n_samples==-1 else params.valid_n_samples
     
     if not params.eval_only :
-        logger.info("Loading data from %s ..."%params.train_data_file)
-        train_dataset = BiasClassificationDataset(params.train_data_file, 'train', params, dico, 
+        train_dataset = BiasClassificationDataset(params.train_data_file, 'train', params, model, 
                                                 logger, params.train_n_samples, min_len = params.min_len)
         setattr(params, "train_num_step", len(train_dataset))
         setattr(params, "train_num_data", train_dataset.n_samples)
@@ -507,8 +679,7 @@ def load_dataset(params, logger, dico) :
         train_dataset = None
     
     logger.info("")
-    logger.info("Loading data from %s ..."%params.val_data_file)
-    val_dataset = BiasClassificationDataset(params.val_data_file, "valid", params, dico, logger, params.valid_n_samples)
+    val_dataset = BiasClassificationDataset(params.val_data_file, "valid", params, model, logger, params.valid_n_samples)
 
     logger.info("")
     logger.info("============ Data summary")
@@ -522,11 +693,6 @@ def load_dataset(params, logger, dico) :
 """ Training Class"""
 #possib = ["%s_%s_%s"%(i, j, k) for i, j, k in itertools.product(["train", "val"], ["mlm", "nsp"], ["ppl", "acc", "loss"])]
 possib = []
-possib.extend(["%s_%s"%(i, j) for i, j in itertools.product(["train", "val"], ["f1_score_weighted", "acc", "loss", "IoU_weighted"])])
-tmp = []
-for k in range(1, len(label_dict)+1):
-    tmp.extend( ["%s_%s"%(i, j) for i, j in itertools.product(["top%d"%k], possib)])
-possib.extend(tmp)
 tmp_type = lambda name : "ppl" in name or "loss" in name
 
 class Trainer(object):
@@ -548,6 +714,14 @@ class Trainer(object):
         if self.epoch_size == -1 and not params.eval_only:
             self.epoch_size = self.params.train_num_data
         assert self.epoch_size > 0 or params.eval_only
+        
+        # add metrics and topK to possible metrics
+        global possib
+        possib.extend(["%s_%s"%(i, j) for i, j in itertools.product(["train", "val"], ["f1_score_weighted", "acc", "loss", "IoU_weighted", "MCC"])])
+        tmp = []
+        for k in range(1, params.n_labels+1):
+            tmp.extend(["%s_%s"%(i, j) for i, j in itertools.product(["top%d"%k], possib)])
+        possib.extend(tmp)
 
         # validation metrics
         self.metrics = []
@@ -581,13 +755,14 @@ class Trainer(object):
             self.stopping_criterion = None
             self.best_criterion = None
 
-
         # training statistics
         self.epoch = 0
         self.n_iter = 0
         self.n_total_iter = 0
         self.n_sentences = 0
         self.stats = OrderedDict([('processed_s', 0), ('processed_w', 0)])
+        self.all_scores = []
+        #self.all_scores = OrderedDict()
         self.last_time = time.time()
 
         self.log_interval = self.params.log_interval
@@ -614,7 +789,7 @@ class Trainer(object):
         # float16 / distributed (no AMP)
         assert params.amp >= 1 or not params.fp16
         #assert params.amp >= 0 or params.accumulate_gradients == 1
-        self.model = self.model.to(self.device)
+        #self.model = self.model.to(self.device)
         if params.multi_gpu and params.amp == -1:
             self.logger.info("Using nn.parallel.DistributedDataParallel ...")
             self.model = nn.parallel.DistributedDataParallel(self.model, device_ids=[params.local_rank], output_device=params.local_rank, broadcast_buffers=True)
@@ -732,7 +907,7 @@ class Trainer(object):
                 self.logger.info('New best score for %s: %.6f' % (metric, scores[metric]))
                 self.save_checkpoint('best_%s' % metric, include_optimizer=False)
  
-    def save_checkpoint(self, name, include_optimizer = True):
+    def save_checkpoint(self, name, include_optimizer = True, include_all_scores=False):
         """
         Save the model / checkpoints.
         """
@@ -748,12 +923,18 @@ class Trainer(object):
             'epoch': self.epoch,
             'n_total_iter': self.n_total_iter,
             'best_metrics': self.best_metrics,
-            'best_criterion': self.best_criterion,
+            'best_criterion': self.best_criterion
         }
 
         if include_optimizer:
             self.logger.warning(f"Saving optimizer ...")
             data['optimizer'] = [optimizer.state_dict() for optimizer in self.optimizers]
+        
+        if include_all_scores :
+            self.logger.warning(f"Saving all scores ...")
+            data['all_scores'] = self.all_scores
+            score_path = os.path.join(self.params.dump_path, 'all_scores.pth')
+            torch.save(self.all_scores, score_path)
 
         torch.save(data, checkpoint_path)
 
@@ -807,6 +988,13 @@ class Trainer(object):
             self.n_total_iter = data['n_total_iter']
             self.best_metrics = data['best_metrics']
             self.best_criterion = data['best_criterion']
+            
+            if 'all_scores' in data :
+                self.all_scores = data['all_scores']
+                #score_path = os.path.join(self.params.dump_path, 'all_scores.pth')
+                #if os.path.isfile(score_path) :
+                #    self.all_scores = torch.load(score_path)
+            
             if reloading_checkpoint_condition :
                 self.logger.warning(f"Checkpoint reloaded. Resuming at epoch {self.epoch} / iteration {self.n_total_iter} ...")
             else :
@@ -836,12 +1024,14 @@ class Trainer(object):
                 data = torch.load(pretrain_file, map_location='cpu')
                 if type(data) == dict :
                     data = data["model"]
+                """
                 self.model.transformer.load_state_dict(
                     {key[12:]: # remove 'transformer.' (in 'transformer.embedding.norm.bias' for example)
                         value
                         for key, value in data.items()
                         if key.startswith('transformer')} # load only transformer parts
                 )
+                """
             else :
                 raise RuntimeError("Incorrect file extension")
 
@@ -868,7 +1058,7 @@ class Trainer(object):
                 if self.params.multi_gpu and 'SLURM_JOB_ID' in os.environ:
                     os.system('scancel ' + os.environ['SLURM_JOB_ID'])
                 exit()
-        self.save_checkpoint("checkpoint", include_optimizer=True)
+        self.save_checkpoint("checkpoint", include_optimizer=True, include_all_scores=True)
         self.epoch += 1
         
     def print_stats(self):
@@ -933,8 +1123,7 @@ class Trainer(object):
             self.stats['progress'] = min(int(((i+1)/self.params.train_num_step)*100), 100) 
 
             for name in stats.keys() :
-                if ("loss" in name or 'acc' in name or "f1_score" in name or "IoU" in name) \
-                and not "top" in name:
+                if ("loss" in name or 'acc' in name or "f1_score" in name or "IoU" in name) and not "top" in name:
                     self.stats[name] = self.stats.get(name, []) + [stats[name]]
 
             self.iter()
@@ -956,7 +1145,7 @@ class Trainer(object):
     
     def train(self, get_loss, end_of_epoch):
         """ Train Loop """
-
+        
         for _ in range(self.params.max_epoch):
             
             self.logger.info("============ Starting epoch %i ... ============" % self.epoch)
@@ -965,24 +1154,81 @@ class Trainer(object):
                 if "avg" in k :
                     self.stats[k] = []
             train_stats = self.train_step(get_loss)
+            
             self.logger.info("============ End of epoch %i ============" % self.epoch)
 
             val_stats = self.eval_step(get_loss)
 
             scores = end_of_epoch([val_stats, train_stats])
+            self.all_scores.append(scores)
+            #self.all_scores[self.epoch] = scores
+            
             self.plot_score(scores)
 
             # end of epoch
             self.save_best_model(scores)
             self.save_periodic()
             self.end_epoch(scores)
-
+            
+        plot_all_scores(self.all_scores)
+        
     def eval(self, get_loss, end_of_epoch):
         """ Eval Loop """
         val_stats = self.eval_step(get_loss)
         scores = end_of_epoch([val_stats])
         self.plot_score(scores)
+    
+def plot_all_scores(scores=None, from_path="") :
+    assert scores is not None or os.path.isfile(from_path)
+    if scores is None :
+        scores = torch.load(from_path)
+        if "all_scores" in scores :
+            scores = scores["all_scores"]
 
+    to_plot = ['loss', 'acc', 'f1_score_weighted', 'IoU_weighted']
+    prefix = ['train', 'val']
+    suptitle=""
+    k = 0
+    if True :
+        to_plot.append("MCC")
+        nrows, ncols = len(to_plot), 1
+        fig, ax = plt.subplots(nrows, ncols, sharex=False, figsize = (20, 20))
+        fig.suptitle(suptitle)
+        for i in range(nrows) :
+            name = to_plot[k]
+            for p in prefix :
+                label = "%s_%s"%(p,name)
+                y = [s[label] for s in scores]
+                x = list(range(len(y)))
+                ax[i].plot(x, y, label=label)
+            ax[i].set(xlabel='epoch', ylabel=p)
+            ax[i].set_title('%s per epoch'%name)
+            ax[i].legend()
+            #ax[i].label_outer() # Hide x labels and tick labels for top plots and y ticks for right plots.
+            k += 1
+            if k == len(to_plot) :
+                break
+    else :
+        nrows, ncols = 2, 2
+        fig, ax = plt.subplots(nrows, ncols, sharex=False, figsize = (20, 8))
+        fig.suptitle(suptitle)
+        for i in range(nrows) :
+            for j in range(ncols) :
+                name = to_plot[k]
+                for p in prefix :
+                    label = "%s_%s"%(p,name)
+                    y = [s[label] for s in scores]
+                    x = list(range(len(y)))
+                    ax[i][j].plot(x, y, label=label)
+                ax[i][j].set(xlabel='epoch', ylabel=p)
+                ax[i][j].set_title('%s per epoch'%name)
+                ax[i][j].legend()
+                #ax[i][j].label_outer() # Hide x labels and tick labels for top plots and y ticks for right plots.
+                k += 1
+                if k == len(to_plot) :
+                    break
+    plt.show()
+    
 #eps = torch.finfo(torch.float32).eps # 1.1920928955078125e-07
 #eps = 1e-20 # TODO : search for the smallest `eps` number under pytorch such as `torch.log(eps) != -inf`
 
@@ -991,8 +1237,8 @@ def bias_classification_loss(q_c: Tensor, p_c: Tensor, weight = None, reduction 
 
     We have implemented this version to be able to call it directly as torch.nn.functional.some_loss_
     
-    mean has been used by default for reduction in Olawale | Dianbo | Yoshua paper.
-    They used log instead of log_softmax, but some q_c entries can be null if a softmax 
+    mean is used by default for reduction.
+    If used log instead of log_softmax, some q_c entries can be null if a softmax 
     is not applied to the output of the model beforehand, resulting in an infinite loss (nan).
 
     \begin{equation}
@@ -1058,8 +1304,8 @@ class BiasClassificationLoss(nn.Module):
     r"""We have implemented this version in order to be able to do .to(devise) on the loss function, motivated by 
     the basic loss functions in pytorch : https://pytorch.org/docs/stable/_modules/torch/nn/modules/loss.html
     
-    mean has been used by default for reduction in Olawale | Dianbo | Yoshua paper.
-    They used log instead of log_softmax, but some q_c entries can be null if a softmax 
+    mean is used by default for reduction.
+    If used log instead of log_softmax, some q_c entries can be null if a softmax 
     is not applied to the output of the model beforehand, resulting in an infinite loss (nan).
 
     \begin{equation}
@@ -1104,6 +1350,4 @@ class BiasClassificationLoss(nn.Module):
     
     def forward(self, q_c: Tensor, p_c: Tensor) -> Tensor:
         """assume p_c, q_c is (batch_size, num_of_classes)"""
-        #assert torch.equal(torch.sum(p_c, dim = 1), torch.ones(bach_size, dtype=p_c.dtype))
-        #assert torch.equal(torch.sum(q_c, dim = 1), torch.ones(bach_size, dtype=q_c.dtype))
         return bias_classification_loss(q_c, p_c, self.weight, self.reduction, self.softmax)

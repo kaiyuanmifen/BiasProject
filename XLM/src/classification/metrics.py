@@ -1,3 +1,10 @@
+# Copyright (c) 2021-present, Pascal Tikeng, MILA.
+# All rights reserved.
+#
+# This source code is licensed under the license found in the
+# LICENSE file in the root directory of this source tree.
+#
+
 import torch
 import torch.nn.functional as F
 
@@ -14,8 +21,6 @@ try :
 except ImportError : #cannot import name 'HammingDistance' from 'pytorch_lightning.metrics' (....\Anaconda3\lib\site-packages\pytorch_lightning\metrics\__init__.py)
     HammingDistance = None
 
-from src.bias_classification import label_dict
-
 def get_acc(pred, label):
     arr = (np.array(pred) == np.array(label)).astype(float)
     if arr.size != 0: # check NaN 
@@ -29,6 +34,10 @@ def f1_score_func(pred, label):
 def iou_func(pred, label):
     """Intersection over Union IoU scores : Jaccard similarity coefficient score"""
     return jaccard_score(y_true = label, y_pred = pred, average="weighted")*100
+
+def mcc_func(pred, label):
+    """Compute the Matthews correlation coefficient (MCC)"""
+    return matthews_corrcoef(y_true = label, y_pred = pred)
 
 def top_k(logits, y, k : int = 1):
     """
@@ -57,7 +66,7 @@ def top_k(logits, y, k : int = 1):
         #a = a.to(torch.int8)
         #y_pred = a * y + (1-a) * torch.zeros((bs,), dtype=y.dtype)
         
-        return acc, 0, 0, y
+        return acc, 0, 0, 0, y
     else :
         # These two approaches are equivalent
         if False :
@@ -74,32 +83,31 @@ def top_k(logits, y, k : int = 1):
             #correct = a.numpy()
     
     y_pred = y_pred.cpu().numpy()
-    #f1 = f1_score(y_pred, y, average='weighted')*100
     f1 = f1_score_func(y_pred, y)
-    #acc = sum(correct)/len(correct)*100
-    #acc = accuracy_score(y_pred, y)*100
-    acc = get_acc(y_pred, y)
-    
+    acc = get_acc(y_pred, y) # sum(correct)/len(correct)*100
     iou = iou_func(y_pred, y)
+    mcc = mcc_func(y_pred, y)
     
-    return acc, f1, iou, y_pred
+    return acc, f1, iou, mcc, y_pred
 
 class Metrics():
-    def __init__(self, device, topK = 3) :
+    def __init__(self, device, num_classes, topK = 3) :
         
-        self.val_metrics = torch.nn.ModuleDict({
+        val_metrics = {
             'hamming_dist': HammingDistance() if HammingDistance is not None else None, 
-            'iou': IoU(num_classes=6),
-            'auroc': AUROC(num_classes=6), 
-            'f1': F1(num_classes=6, multilabel=True),
-            'top1': Accuracy(top_k=1), 
-            'top2': Accuracy(top_k=2), 
-            'top3': Accuracy(top_k=3), 
-            'avg_precision': AveragePrecision(num_classes=6)
-        })
+            'iou': IoU(num_classes=num_classes),
+            'auroc': AUROC(num_classes=num_classes), 
+            'f1': F1(num_classes=num_classes, multilabel=True), 
+            'avg_precision': AveragePrecision(num_classes=num_classes)
+        }
+        
+        for k in range(1, topK+1):
+            val_metrics["top%d"%k] = Accuracy(top_k=k) 
+        
+        self.val_metrics = torch.nn.ModuleDict(val_metrics)
 
         self.label_binarizer = LabelBinarizer()
-        self.class_names = [0, 1, 2, 3, 4, 5]
+        self.class_names = list(range(num_classes))
         self.label_binarizer.fit(self.class_names)
 
         self.device = device
@@ -119,12 +127,9 @@ class Metrics():
         
         results = {}
 
-        results["top1_acc"] = self.val_metrics['top1'](predictions, y).item()
-        results["top2_acc"] = self.val_metrics['top2'](predictions, y).item()
-        results["top3_acc"] = self.val_metrics['top3'](predictions, y).item()
-        self.val_metrics['top1'].reset()
-        self.val_metrics['top2'].reset()
-        self.val_metrics['top3'].reset()
+        for k in range(1, self.topK+1):
+            results["top%d_acc"%k] = self.val_metrics['top%d'%k](predictions, y).item()
+            self.val_metrics['top%d'%k].reset()
 
         # array of ap for each class
         avg_precision = self.val_metrics['avg_precision'](predictions, y) 
@@ -139,7 +144,13 @@ class Metrics():
         return results
 
         topK = self.topK
+        
+        if targets.dim() != 2 :
+            return results
 
+        # Olawale : Which module did you use for label_binarizer ?
+        # Multi output target data is not supported with label binarization : OneVsRest Classifier
+        # https://stackoverflow.com/questions/51061095/multi-output-target-data-is-not-supported-with-label-binarization-onevsrest-cl
         pred_matrix = [self.label_binarizer.fit_transform(predictions.cpu().topk(k=j).indices.numpy()) for j in range(1, topK+1)]
         targ_matrix = [self.label_binarizer.fit_transform(targets.cpu().topk(k=j).indices.numpy()) for j in range(1, topK+1)]
 
@@ -177,29 +188,34 @@ def get_stats(logits, y, params, inclure_pred=True, include_avg=True):
         stats["label_id"] = label_id
         
     for k in range(1, params.topK+1):
-        k_acc, k_f1, iou, y_pred = top_k(logits = logits.detach().cpu(), y=y, k=k)
+        k_acc, k_f1, iou, mcc, y_pred = top_k(logits = logits.detach().cpu(), y=y, k=k)
         stats["top%d_acc"%k] = k_acc
         stats["top%d_f1_score"%k] = k_f1
         stats["top%d_IoU"%k] = iou
+        stats["top%d_MCC"%k] = mcc
         if include_avg :
             stats["top%d_avg_IoU"%k] = iou
             stats["top%d_avg_acc"%k] = k_acc
             stats["top%d_avg_f1_score"%k] = k_f1
+            stats["top%d_avg_MCC"%k] = mcc
         if inclure_pred :
             stats["top%d_label_pred"%k] = y_pred
         
     acc = get_acc(label_pred, label_id)
     f1 = f1_score_func(label_pred, label_id)
     iou = iou_func(label_pred, label_id)
+    mcc = mcc_func(label_pred, label_id)
     
     stats["acc"] = acc
     stats["f1_score_weighted"] = f1
     stats["IoU_weighted"] = iou
+    stats["MCC"] = mcc
     
     if include_avg :
         stats["avg_acc"] = acc
         stats["avg_f1_score_weighted"] = f1
         stats["avg_IoU_weighted"] = iou
+        stats["avg_MCC"] = mcc
 
     return stats
 
@@ -249,7 +265,7 @@ def get_collect(total_stats, params):
         for k in range(1, params.topK+1):
             collect['label_pred_topK'][k].extend(stats.get("top%d_label_pred"%k, []))
             collect['inv_label_pred_topK'][k].extend(stats.get("inv_top%d_label_pred"%k, []))
-             
+
     return collect
 
 def get_score(collect, prefix, params, inv="", pl_metrics = None) :
@@ -261,18 +277,20 @@ def get_score(collect, prefix, params, inv="", pl_metrics = None) :
     scores["%s_acc"%prefix] = get_acc(label_pred, label_id) #accuracy_score(label_pred, label_id)*100
     scores["%s_f1_score_weighted"%prefix] = f1_score_func(label_pred, label_id)
     scores["%s_IoU_weighted"%prefix] = iou_func(label_pred, label_id)
+    scores["%s_MCC"%prefix] = mcc_func(label_pred, label_id)
         
     for k in range(1, params.topK+1):
         scores["fake_top%d_%s_acc"%(k, prefix)] = get_acc(label_pred_topK[k], label_id)
         scores["fake_top%d_%s_f1_score_weighted"%(k, prefix)] = f1_score_func(label_pred_topK[k], label_id)
         scores["fake_top%d_%s_IoU_weighted"%(k, prefix)] = iou_func(label_pred_topK[k], label_id)
+        scores["fake_top%d_%s_MCC"%(k, prefix)] = mcc_func(label_pred_topK[k], label_id)
         
     report = classification_report(y_true = label_id, y_pred = label_pred, digits=4, output_dict=True, zero_division=0)
         
     m_v = {'precision': [], 'recall': [], 'f1-score':[]}
     if True :
         for k in report :
-            if k in label_dict.keys() :
+            if k in list(range(params.n_labels)) :
                 v = report.get(k, None)
                 for k1 in m_v.keys():
                     m_v[k1] = m_v.get(k1, []) + [v[k1]]
@@ -283,15 +301,16 @@ def get_score(collect, prefix, params, inv="", pl_metrics = None) :
         # AP
         for k in m_v.keys():
             v = m_v.get(k, [0.0])
-            scores["%s_mean_average_%s"%(prefix, k)] = sum(v) / len(v)*100
+            l = len(v) if len(v) !=0 else 1
+            scores["%s_mean_average_%s"%(prefix, k)] = sum(v) / l*100
     
     y2 = torch.cat(collect["%sy2"%inv], dim=0)
     logits = torch.cat(collect["%slogits"%inv], dim=0)
     s = get_stats(logits, y2, params, inclure_pred=False, include_avg=False)
     for k, v in s.items() :
         scores["true_%s_%s"%(prefix, k)] = v 
-        
-    pl_metrics = Metrics(device = params.device, topK = params.topK)
+
+    pl_metrics = Metrics(device = params.device, num_classes = params.n_labels, topK = params.topK)
 
     s = pl_metrics(logits, targets = y2)
     for k, v in s.items() :
@@ -304,7 +323,7 @@ def get_score(collect, prefix, params, inv="", pl_metrics = None) :
             scores["%spl_multilabel_%s_%s"%(inv, prefix, k)] = v 
             
         for k in range(1, params.topK+1):
-            k_acc, _, _, _ = top_k(logits = logits.detach().cpu(), y=y1, k=k)
+            k_acc, _, _, _, _ = top_k(logits = logits.detach().cpu(), y=y1, k=k)
             scores["%smultilabel_top%d_%s_acc"%(inv, k, prefix)] = k_acc
 
     if inv != "" :
