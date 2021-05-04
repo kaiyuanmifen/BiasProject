@@ -8,25 +8,46 @@
 import torch
 import torch.nn.functional as F
 
-import os
-import numpy as np
-
-from sklearn.metrics import f1_score, accuracy_score, jaccard_score, matthews_corrcoef, classification_report
-from sklearn.preprocessing import LabelBinarizer
-
 from pytorch_lightning.metrics import IoU, AUROC, F1, Accuracy, AveragePrecision
-
 try :
     from pytorch_lightning.metrics import HammingDistance
 except ImportError : #cannot import name 'HammingDistance' from 'pytorch_lightning.metrics' (....\Anaconda3\lib\site-packages\pytorch_lightning\metrics\__init__.py)
     HammingDistance = None
 
+from sklearn.metrics import f1_score, accuracy_score, jaccard_score, matthews_corrcoef, classification_report
+from sklearn.metrics import confusion_matrix
+#from sklearn.preprocessing import LabelBinarizer
+from sklearn.preprocessing import MultiLabelBinarizer
+
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+import os
+import numpy as np
+
+def plot_conf(y_true, y_pred, label="", figsize=(7,4)) :
+    cm = confusion_matrix(y_true, y_pred)
+    fig, ax = plt.subplots(figsize=figsize)         # Sample figsize in inches
+    fig.suptitle("confusion matrix %s"%label)
+    f = sns.heatmap(cm, annot=True, linewidths=.5, ax=ax)
+
 def get_acc(pred, label):
+    """
+    # This approach is exposed to this error for params.version == 7 : 
+    # ~ https://github.com/gperftools/gperftools/issues/360
+    # ~ https://support.microfocus.com/kb/doc.php?id=7012805
+    # ~ local 
+    #       >>> TCMALLOC_LARGE_ALLOC_REPORT_THRESHOLD=21329330176  (failed on colab)
+    #       >>> python classify.py ...
+    """
+    """
     arr = (np.array(pred) == np.array(label)).astype(float)
     if arr.size != 0: # check NaN 
         return arr.mean()*100
     return 0
-
+    """
+    return accuracy_score(y_true = label, y_pred = pred)*100
+    
 def f1_score_func(pred, label):
     # https://stackoverflow.com/questions/43162506/undefinedmetricwarning-f-score-is-ill-defined-and-being-set-to-0-0-in-labels-wi
     return f1_score(y_true = label, y_pred = pred, average='weighted', labels=np.unique(pred))*100
@@ -62,11 +83,11 @@ def top_k(logits, y, k : int = 1):
         bs = logits.size(0)
         correct = a.to(torch.int8).numpy()
         acc = sum(correct)/len(correct)*100
-        y = torch.ones((bs,), dtype=y.dtype)
+        #y = torch.ones((bs,), dtype=y.dtype)
         #a = a.to(torch.int8)
         #y_pred = a * y + (1-a) * torch.zeros((bs,), dtype=y.dtype)
         
-        return acc, 0, 0, 0, y
+        return acc, 0, 0, 0, None
     else :
         # These two approaches are equivalent
         if False :
@@ -93,6 +114,9 @@ def top_k(logits, y, k : int = 1):
 class Metrics():
     def __init__(self, device, num_classes, topK = 3) :
         
+        self.device = device
+        self.topK = topK
+        
         val_metrics = {
             'hamming_dist': HammingDistance() if HammingDistance is not None else None, 
             'iou': IoU(num_classes=num_classes),
@@ -104,17 +128,15 @@ class Metrics():
         for k in range(1, topK+1):
             val_metrics["top%d"%k] = Accuracy(top_k=k) 
         
-        self.val_metrics = torch.nn.ModuleDict(val_metrics)
+        self.val_metrics = torch.nn.ModuleDict(val_metrics).to(self.device)
 
-        self.label_binarizer = LabelBinarizer()
         self.class_names = list(range(num_classes))
-        self.label_binarizer.fit(self.class_names)
+        self.label_binarizer = MultiLabelBinarizer(classes=self.class_names)
 
-        self.device = device
-
-        self.topK = topK
-
-    def __call__(self, logits, targets, softmax=False) :
+    def __call__(self, logits, targets, softmax=True) :
+        logits = logits.to(self.device)
+        targets = targets.to(self.device)
+        
         if targets.dim() == 2 :
             y = targets.argmax(dim=1)
         else :
@@ -128,29 +150,24 @@ class Metrics():
         results = {}
 
         for k in range(1, self.topK+1):
-            results["top%d_acc"%k] = self.val_metrics['top%d'%k](predictions, y).item()
+            results["top%d_acc"%k] = self.val_metrics['top%d'%k](predictions, y).item()*100
             self.val_metrics['top%d'%k].reset()
 
         # array of ap for each class
         avg_precision = self.val_metrics['avg_precision'](predictions, y) 
         try :
-            results["APc"] = avg_precision.item()
+            results["APc"] = avg_precision.item()*100
             results["mAP"] = results["APc"] 
         except AttributeError : # 'list' object has no attribute 'item' 
-            results["APc"] = [p.item() for p in avg_precision]
+            results["APc"] = [p.item()*100 for p in avg_precision]
             results["mAP"] = sum(results["APc"]) / len(results["APc"])
         self.val_metrics['avg_precision'].reset()
 
-        return results
-
-        topK = self.topK
-        
         if targets.dim() != 2 :
             return results
 
-        # Olawale : Which module did you use for label_binarizer ?
-        # Multi output target data is not supported with label binarization : OneVsRest Classifier
-        # https://stackoverflow.com/questions/51061095/multi-output-target-data-is-not-supported-with-label-binarization-onevsrest-cl
+        topK = self.topK
+        
         pred_matrix = [self.label_binarizer.fit_transform(predictions.cpu().topk(k=j).indices.numpy()) for j in range(1, topK+1)]
         targ_matrix = [self.label_binarizer.fit_transform(targets.cpu().topk(k=j).indices.numpy()) for j in range(1, topK+1)]
 
@@ -161,13 +178,17 @@ class Metrics():
         auroc = [0] * topK
 
         for i in range(topK):
-            iou[i] = self.val_metrics['iou'](torch.as_tensor(pred_matrix[i], device=self.device), torch.as_tensor(targ_matrix[i], device=self.device))
+            y_pred = torch.as_tensor(pred_matrix[i], device=self.device)
+            y_true = torch.as_tensor(targ_matrix[i], device=self.device)
+            
+            iou[i] = self.val_metrics['iou'](y_pred, y_true).item()*100
+            f1_scores[i] = self.val_metrics['f1'](y_pred, y_true).item()*100
+            
             self.val_metrics['iou'].reset()
-            f1_scores[i] = self.val_metrics['f1'](torch.as_tensor(pred_matrix[i], device=self.device), torch.as_tensor(targ_matrix[i], device=self.device))
             self.val_metrics['f1'].reset()
             
             if HammingDistance is not None :
-                hamming_dist[i] = self.val_metrics['hamming_dist'](torch.as_tensor(pred_matrix[i], device=self.device), torch.as_tensor(targ_matrix[i], device=self.device))
+                hamming_dist[i] = self.val_metrics['hamming_dist'](y_pred, y_true).item()*100
                 self.val_metrics['hamming_dist'].reset()
         
         results["iou"] = iou
@@ -249,10 +270,10 @@ def get_collect(total_stats, params):
                     collect[key].append(v)
         """
         collect["loss"].append(stats["loss"])
-        collect["y1"].append(stats["y1"])
+        collect["y1"].append(stats.get("y1", []))
         
-        collect['label_pred'].extend(stats["label_pred"])
-        collect['label_id'].extend(stats["label_id"])
+        collect['label_pred'].extend(stats.get("label_pred", []))
+        collect['label_id'].extend(stats.get("label_id", []))
 
         collect["logits"].append(stats["logits"])
         collect["y2"].append(stats["y2"])
@@ -268,7 +289,7 @@ def get_collect(total_stats, params):
 
     return collect
 
-def get_score(collect, prefix, params, inv="", pl_metrics = None) :
+def get_score(collect, prefix, params, inv="", add_output = False) :
     scores = {}
     label_pred = collect["%slabel_pred"%inv]
     label_id = collect["%slabel_id"%inv]
@@ -301,14 +322,20 @@ def get_score(collect, prefix, params, inv="", pl_metrics = None) :
         # AP
         for k in m_v.keys():
             v = m_v.get(k, [0.0])
-            l = len(v) if len(v) !=0 else 1
-            scores["%s_mean_average_%s"%(prefix, k)] = sum(v) / l*100
+            l = len(v)
+            #l = l if l != 0 else 1
+            if l != 0 :
+                scores["%s_mean_average_%s"%(prefix, k)] = sum(v) / l*100
     
     y2 = torch.cat(collect["%sy2"%inv], dim=0)
     logits = torch.cat(collect["%slogits"%inv], dim=0)
+    #print("logits", prefix, inv, logits)
+    if add_output :
+        scores["%sy2_%s"%(inv, prefix)] = y2
+        scores["%slogits_%s"%(inv, prefix)] = logits
     s = get_stats(logits, y2, params, inclure_pred=False, include_avg=False)
     for k, v in s.items() :
-        scores["true_%s_%s"%(prefix, k)] = v 
+        scores["%strue_%s_%s"%(inv, prefix, k)] = v 
 
     pl_metrics = Metrics(device = params.device, num_classes = params.n_labels, topK = params.topK)
 
@@ -318,13 +345,16 @@ def get_score(collect, prefix, params, inv="", pl_metrics = None) :
 
     if inv == "" :
         y1 = torch.cat(collect["y1"], dim=0)
+        #print("y1", prefix, inv, y1)
+        if add_output :
+            scores["%sy1_%s"%(inv, prefix)] = y1
         s = pl_metrics(logits, targets = y1)
         for k, v in s.items() :
             scores["%spl_multilabel_%s_%s"%(inv, prefix, k)] = v 
             
         for k in range(1, params.topK+1):
             k_acc, _, _, _, _ = top_k(logits = logits.detach().cpu(), y=y1, k=k)
-            scores["%smultilabel_top%d_%s_acc"%(inv, k, prefix)] = k_acc
+            scores["%ssklearn_multilabel_top%d_%s_acc"%(inv, k, prefix)] = k_acc
 
     if inv != "" :
         keys = scores.keys()

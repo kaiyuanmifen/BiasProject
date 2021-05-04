@@ -152,10 +152,10 @@ class AdamCosineWithWarmup(Adam):
     from some initial learning rate (``--warmup-init-lr``) until the configured
     learning rate (``--lr``).
     During warmup::
-      lrs = torch.linspace(args.warmup_init_lr, args.lr, args.warmup_updates)
-      lr = lrs[update_num]
+        lrs = torch.linspace(args.warmup_init_lr, args.lr, args.warmup_updates)
+        lr = lrs[update_num]
     After warmup::
-      lr = lr_min + 0.5*(lr_max - lr_min)*(1 + cos(t_curr / t_i))
+        lr = lr_min + 0.5*(lr_max - lr_min)*(1 + cos(t_curr / t_i))
     where ``t_curr`` is current percentage of updates within the current period
     range and ``t_i`` is the current period range, which is scaled by ``t_mul``
     after every iteration.

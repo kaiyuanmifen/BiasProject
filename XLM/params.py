@@ -391,6 +391,11 @@ config_dic = {
     "data_columns":[str, ""],
     "n_labels" : [int, 6],
     "version": [int, 1],
+    "in_memory":[bool, True],
+    "do_augment":[bool, False],
+    "do_downsampling":[bool, False],
+    "do_upsampling":[bool, False],
+    "threshold":[float, 2.5],
     "log_softmax": [bool, True],
     "shuffle":[bool, True],
     "codes":[str, ""],
@@ -457,32 +462,32 @@ def three_point(objectif, lgs, name) :
                     lj = langs[j]
                     result = result+","+li+"-"+lj
         elif name == "mt" :
-          langs = lgs.split("-")
-          l = len(langs)
-          for i in range(l-1):
-            for j in range(i+1, l):
-              li = langs[i]
-              lj = langs[j]
-              result = result+","+li+"-"+lj
-              result = result+","+lj+"-"+li
-          if result.startswith(","):
-            result = result[1:]
+            langs = lgs.split("-")
+            l = len(langs)
+            for i in range(l-1):
+                for j in range(i+1, l):
+                    li = langs[i]
+                    lj = langs[j]
+                    result = result+","+li+"-"+lj
+                    result = result+","+lj+"-"+li
+            if result.startswith(","):
+                result = result[1:]
         elif name == "ae" :
-          langs = lgs.split("-")
-          result = langs[0]
-          for lg in langs[1:] :
-            result = result+","+lg
+            langs = lgs.split("-")
+            result = langs[0]
+            for lg in langs[1:] :
+                result = result+","+lg
         elif name == "bt" :
-          langs = lgs.split("-")
-          l = len(langs)
-          for i in range(l-1):
-            for j in range(i+1, l):
-              li = langs[i]
-              lj = langs[j]
-              result = result+","+li+"-"+lj+"-"+li
-              result = result+","+lj+"-"+li+"-"+lj
-          if result.startswith(","):
-            result = result[1:]
+            langs = lgs.split("-")
+            l = len(langs)
+            for i in range(l-1):
+                for j in range(i+1, l):
+                    li = langs[i]
+                    lj = langs[j]
+                    result = result+","+li+"-"+lj+"-"+li
+                    result = result+","+lj+"-"+li+"-"+lj
+            if result.startswith(","):
+                result = result[1:]
         elif name == "pc" : 
             langs = lgs.split("-")
             l = len(langs)

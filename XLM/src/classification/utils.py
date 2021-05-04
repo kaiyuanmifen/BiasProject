@@ -99,16 +99,19 @@ def hash_var(var, type_='sha-1'):
     # return the hex representation of digest #, hash value as a bytes object
     return h.hexdigest() #, h.digest()
 
-def get_data_path(params, data_file, n_samples) :
+def get_data_path(params, data_file, n_samples, split) :
     filename, _ = os.path.splitext(path_leaf(data_file))
-    # data_columns
-    f = '%s_%s_%s_%s_%s_%s'%(params.version, params.n_labels, params.google_bert, params.weighted_training, params.batch_size, n_samples)
+    f = '%s_%s_%s_%s_%s_%s_%s_%s_%s_%s_%s_%s_%s'%(
+        params.version, params.n_labels, params.google_bert, params.weighted_training, params.batch_size, n_samples, 
+        params.data_columns, params.in_memory, params.do_augment, params.do_downsampling, params.do_upsampling,
+        split, params.threshold
+    )
     if params.google_bert :
         f += "_%s"%params.bert_model_name
     else : 
         f += "_%s"%hash_file(params.codes)
         if os.path.isfile(params.vocab) :
-        	f += "_%s"%hash_file(params.vocab)
+            f += "_%s"%hash_file(params.vocab)
 
     filename = "%s_%s"%(filename, hash_var(f))
     data_path = os.path.join(params.dump_path, '%s.pth'%filename)

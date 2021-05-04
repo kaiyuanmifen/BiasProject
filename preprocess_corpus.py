@@ -9,7 +9,8 @@
 
 #! pip install clean-text
 
-from cleantext import clean
+#from cleantext import clean
+import cleantext
 
 import io
 import os
@@ -81,7 +82,7 @@ def preprocess_sentence(w, i = 1):
         w = cleanpunct(w, excapt=split(string.punctuation.replace("<", "").replace(">","")))
     else :
         i = 0
-    w = clean(w,
+    w = cleantext.clean(w,
                 fix_unicode=True,               # fix various unicode errors
                 to_ascii=True,                  # transliterate to closest ASCII representation
                 lower=False,                     # lowercase text
@@ -221,7 +222,7 @@ if __name__ == '__main__':
     parser.add_argument("-n", "--n_samples", default=None, type=int)
     parser.add_argument("-s", '--shuffle', type=bool_flag, default = False)
     parser.add_argument("-r", "--random_seed", type=int, default=0)
-   
+
     args = parser.parse_args()
 
     assert os.path.isfile(args.data_file)
