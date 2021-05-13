@@ -25,6 +25,8 @@ import matplotlib.pyplot as plt
 import os
 import numpy as np
 
+import warnings
+
 def plot_conf(y_true, y_pred, label="", figsize=(7,4)) :
     cm = confusion_matrix(y_true, y_pred)
     fig, ax = plt.subplots(figsize=figsize)         # Sample figsize in inches
@@ -63,7 +65,7 @@ def mcc_func(pred, label):
 def top_k(logits, y, k : int = 1):
     """
     logits : (bs, n_labels)
-    y : (bs,)
+    y : (bs,) for multi-class or (bs, n_labels) for multi-label
     """
     labels_dim = 1
     assert 1 <= k <= logits.size(labels_dim)
@@ -86,7 +88,7 @@ def top_k(logits, y, k : int = 1):
         #y = torch.ones((bs,), dtype=y.dtype)
         #a = a.to(torch.int8)
         #y_pred = a * y + (1-a) * torch.zeros((bs,), dtype=y.dtype)
-        
+        warnings.warn("`y.dim() == 2` is deprecated when need f1-score, iou and mcc.")
         return acc, 0, 0, 0, None
     else :
         # These two approaches are equivalent

@@ -18,11 +18,10 @@ import re
 import collections
 
 from .utils import to_bpe_py, to_bpe_cli, get_data_path, path_leaf, init_pretrained_word_embedding
+# bias corpus
+from .utils import special_tokens
 
 from ..data.dictionary import Dictionary, BOS_WORD, EOS_WORD, PAD_WORD, UNK_WORD, MASK_WORD, SPECIAL_WORD, SPECIAL_WORDS
-
-# bias corpus
-special_tokens = ["<url>", "<email>", "<phone>", "<number>", "<digit>", "<cur>"]
 
 def not_exclude(x, special_tokens, do_upper = False):
     return x and "%s\n"%x not in special_tokens and '<%s>\n'%(x.upper() if do_upper else x) not in special_tokens
@@ -97,11 +96,6 @@ class BiasClassificationDataset(Dataset):
                     setattr(self, attr_name, getattr(loaded_self, attr_name))
                 except AttributeError :
                     pass
-                
-            # pretrained word embedding
-            # if hasattr(self, "corpus") : 
-            #    corpus = getattr(self, "corpus")
-            #    init_pretrained_word_embedding(model, sentences = corpus, params = params, logger = logger)
             return
         
         logger.info("Loading data from %s ..."%file)
@@ -172,10 +166,11 @@ class BiasClassificationDataset(Dataset):
         
         if not params.google_bert :
             if not params.use_pretrained_word_embedding or params.train_embedding :
-                # bpe-ize sentences
-                logger.info("bpe-ize sentences...")
-                #sentences = to_bpe_cli(sentences, codes=params.codes, logger = logger, vocab = params.vocab)
-                sentences = to_bpe_py(sentences, codes=params.codes, vocab = params.vocab)
+                if params.model_name == "XLM" or os.path.isfile(params.codes) :
+                    # bpe-ize sentences
+                    logger.info("bpe-ize sentences...")
+                    #sentences = to_bpe_cli(sentences, codes=params.codes, logger = logger, vocab = params.vocab)
+                    sentences = to_bpe_py(sentences, codes=params.codes, vocab = params.vocab)
         
         # check how many tokens are OOV
         if params.google_bert :
@@ -187,7 +182,7 @@ class BiasClassificationDataset(Dataset):
                 # XLM / RNN / LSTM / CNN
                 corpus = ' '.join(sentences).split()
                 n_w = len([w for w in corpus])
-                if params.model_name == "XLM" :
+                if params.model_name == "XLM" or os.path.isfile(params.vocab) :
                     n_oov = len([w for w in corpus if w not in model.dico.word2id])
                 else :
                     if split == "train" :
@@ -325,12 +320,13 @@ class BiasClassificationDataset(Dataset):
                 yield [text, torch.tensor([b, c], dtype=torch.float), torch.tensor(label, dtype=torch.long)]
             
             elif self.version == 6:
-                
+                # TODO
                 label = int(round(sum([ score * conf for score, conf in  zip(b, c) ]) / s))
                 weights[label] = weights[label] + 1
                 yield [text, torch.tensor([b, c], dtype=torch.long), torch.tensor(label, dtype=torch.long)]
             
             elif self.version == 7 :
+                # TODO
                 #label = int(round(sum([ score * conf for score, conf in  zip(b, c) ]) / s))
                 label = sum([ score * conf for score, conf in  zip(b, c) ]) / s
                 label = int(label >= self.threshold) # 1 if label >= self.threshold else 0
@@ -360,7 +356,7 @@ class BiasClassificationDataset(Dataset):
             while self.n_samples > i :
                 i += self.batch_size
                 inst = list(zip(*self.data[i-self.batch_size:i]))
-                tmp.append(tuple([self.to_tensor(inst[0])] + [torch.stack(y) for y in inst[1:]]))
+                return tuple([self.to_tensor(inst[0])] + [torch.stack(y) for y in inst[1:]])
         else :
             for batch in self.data :
                 yield batch
@@ -406,7 +402,7 @@ class BiasClassificationDataset(Dataset):
     def augment(self, data, p = 0.3, max_change = 5) :
         """https://github.com/dsfsi/textaugment
         Do this before :
-        pip install textaugment
+        >>> ! pip install textaugment
         >>> import nltk
         >>> nltk.download('stopwords')
         >>> nltk.download('wordnet')

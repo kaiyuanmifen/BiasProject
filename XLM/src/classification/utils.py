@@ -13,6 +13,12 @@ import ntpath
 
 #import fastBPE
 
+from ..data.dictionary import PAD_WORD, UNK_WORD
+from ..model.transformer import Embedding
+
+# bias corpus
+special_tokens = ["<url>", "<email>", "<phone>", "<number>", "<digit>", "<cur>"]
+
 def to_bpe_cli(sentences, codes : str, vocab : str = "", fastbpe = os.path.join(os.getcwd(), 'tools/fastBPE/fast'), logger = None):
     """
     Below is one way to bpe-ize sentences
@@ -227,20 +233,14 @@ def init_pretrained_word_embedding(model, sentences, params, logger = None) :
     vocab.stoi.update({t : j+i+1 for j, t in enumerate(st)})
     rest = len(st)
     vocab_size = vocab_size + rest     
-    #model.tokenize = TEXT.tokenize
-    #model.tokenize = lambda x : x.split(" ")
+    #model.tokenize = TEXT.tokenize if params.train_embedding else lambda x : x.split(" ")
     if params.train_embedding :
         st_vectors = init_embedding_vector((rest, embedding_dim)) # torch.zeros(rest, embedding_dim)
     else :
         UNK_IDX = TEXT.vocab.stoi[TEXT.unk_token]
-        embedding.weight.data[UNK_IDX]
-        st_vectors = embedding.weight.data[UNK_IDX].clone().expand(rest, -1) # rest x embedding_dim
+        st_vectors = pretrained_embeddings[UNK_IDX].clone().expand(rest, -1) # rest x embedding_dim
     
-    pretrained_embeddings = torch.cat((pretrained_embeddings, st_vectors), dim=0)
-        
-    model.vocab = vocab
-    model.embedding_dim = embedding_dim
-    
+    pretrained_embeddings = torch.cat((pretrained_embeddings, st_vectors), dim=0)    
     embedding = Embedding(num_embeddings = vocab_size, embedding_dim = embedding_dim, padding_idx=pad_index)
     embedding.weight.data.copy_(pretrained_embeddings)
     #UNK_IDX = TEXT.vocab.stoi[TEXT.unk_token]
@@ -248,6 +248,8 @@ def init_pretrained_word_embedding(model, sentences, params, logger = None) :
     #embedding.weight.data[pad_index] = init_embedding_vector(embedding_dim) # torch.zeros(embedding_dim)
     embedding.eval()
     model.embedding = embedding
+    model.vocab = vocab
+    model.embedding_dim = embedding_dim
     model.init_net(params)
     model = model.to(params.device)
     

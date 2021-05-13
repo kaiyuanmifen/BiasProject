@@ -16,8 +16,7 @@ import copy
 #from transformers import BertModel, BertTokenizer
 
 from .metrics import top_k
-from .dataset import special_tokens
-from .utils import  to_tensor
+from .utils import special_tokens, to_tensor
 from .loss import bias_classification_loss, bce_bias_classification_loss, BiasClassificationLoss, kl_divergence_loss, nll_loss, bp_mll_loss, gaussian_nll_loss
 
 from ..utils import truncate, AttrDict
@@ -152,7 +151,7 @@ class PredLayer4Classification(nn.Module):
             else :
                 assert not (self.bce and self.kl_div)
                 if params.version in [2, 4] :
-                    self.bce = False
+                    self.bce = True
                     self.kl_div = False
                     assert not (self.bce and self.kl_div)
                     if self.bce :
@@ -678,6 +677,7 @@ class SimpleClassifier(nn.Module):
                 self.dico = dico
                 input_dim = len(self.dico.id2word)
             elif os.path.isfile(params.vocab) :
+                logger.info('Loading bpe vocabulary from %s'%params.vocab)
                 self.dico = Dictionary.read_vocab(params.vocab, special_tokens)
                 self.pad_index = self.dico.pad_index
                 params.pad_index = self.pad_index
@@ -702,8 +702,6 @@ class SimpleClassifier(nn.Module):
         self.whole_output = params.debug_num == 2
         
         self.hidden_dim = params.hidden_dim
-        #hidden_dim = params.hidden_dim
-        #self.hidden_dim = hidden_dim if params.hidden_dim == -1 else params.hidden_dim 
 
     def init_net(self, params) :
         if hasattr(self, "pad_index") :
@@ -894,7 +892,7 @@ class CNNClassifier(ConvolutionalClassifier):
         Inputs:
             `x`        : LongTensor of shape (bs, slen)
         """
-        embedded = self.embedding(x) # bs x slen x emb_dim
+        embedded = self.dropout(self.embedding(x)) # bs x slen x emb_dim
         embedded = embedded.unsqueeze(dim=1) # bs x 1 x slen x emb_dim
         
         conved = [F.relu(conv(embedded)).squeeze(3) for conv in self.net]
@@ -928,7 +926,7 @@ class CNN1dClassifier(ConvolutionalClassifier):
             `x`        : LongTensor of shape (bs, slen)
         """
             
-        embedded = self.embedding(x) # bs x slen x emb_dim
+        embedded = self.dropout(self.embedding(x)) # bs x slen x emb_dim
         embedded = embedded.permute(0, 2, 1) # bs x emb_dim x slen
         
         conved = [F.relu(conv(embedded)) for conv in self.net]

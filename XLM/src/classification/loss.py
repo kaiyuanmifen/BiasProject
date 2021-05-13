@@ -73,12 +73,22 @@ def kl_divergence_loss(logits, target, weight=None, softmax = False) :
 def nll_loss(logits, target, weight=None):
     return F.nll_loss(F.log_softmax(logits), target, weight=weight)
 
+def gaussian_nll_loss(logits, target, weight=None) :
+    # https://pytorch.org/docs/stable/generated/torch.nn.GaussianNLLLoss.html
+    bs, n_class = target.shape
+    #var = torch.ones(bs, n_class, requires_grad=True).to(logits.device) #heteroscedastic
+    var = torch.ones(bs, 1, requires_grad=True).to(logits.device) #homoscedastic
+    return F.gaussian_nll_loss(input = F.softmax(logits, dim=1), target = target, var = var, full=False, eps=1e-06, reduction='mean')
+
 def bp_mll_loss(c: Tensor, y: Tensor, bias=(1, 1), weight=None) -> Tensor:
     r"""compute the loss, which has the form:
         L = \sum_{i=1}^{m} \frac{1}{|Y_i| \cdot |\bar{Y}_i|} \sum_{(k, l) \in Y_i \times \bar{Y}_i} \exp{-c^i_k+c^i_l}
     :param c: prediction tensor, size: batch_size * n_labels
     :param y: target tensor, size: batch_size * n_labels
     :return: size: scalar tensor
+    
+    Multi-Label Neural Networks with Applications to Functional Genomics and Text Categorization
+    Min-Ling Zhang and Zhi-Hua Zhou, Senior Member, IEEE, 2016
     
     https://github.com/idocx/BP_MLL_Pytorch/blob/master/bp_mll.py
     """
@@ -116,10 +126,3 @@ def one_errors(c: Tensor, y: Tensor) -> Tensor:
     https://github.com/idocx/BP_MLL_Pytorch/blob/master/bp_mll.py"""
     p, _ = c.size()
     return (y[0, torch.argmax(c, dim=1)] != 1).float().sum() / p
-
-def gaussian_nll_loss(logits, target, weight=None) :
-    # https://pytorch.org/docs/stable/generated/torch.nn.GaussianNLLLoss.html
-    bs, n_class = target.shape
-    #var = torch.ones(bs, n_class, requires_grad=True).to(logits.device) #heteroscedastic
-    var = torch.ones(bs, 1, requires_grad=True).to(logits.device) #homoscedastic
-    return F.gaussian_nll_loss(input = F.softmax(logits, dim=1), target = target, var = var, full=False, eps=1e-06, reduction='mean')

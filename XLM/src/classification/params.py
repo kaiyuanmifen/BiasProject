@@ -16,7 +16,10 @@ def add_argument(parser) :
                                 2 : bias_classif_loss(q_c, p_c), expected_label = arg_max(p_c) \
                                 3 : cross_entropy(q_c, expected_label), expected_label = arg_max(p_c) \
                                 4 : bias_classif_loss(q_c, p_c), expected_label = averaging the labels with the confidence scores as weights\
-                                    q_c if the output logits give by the model')
+                                    q_c if the output logits give by the model \
+                                5 : TODO \
+                                6 : TODO \
+                                7 : TODO')
     
     #if parser.parse_known_args()[0].version == 2:
     parser.add_argument("--log_softmax", type=bool_flag, default=True, 
@@ -115,9 +118,9 @@ def check_parameters(params) :
                                     'glove.twitter.27B.25d', 'glove.twitter.27B.50d', 'glove.twitter.27B.100d', 'glove.twitter.27B.200d', 
                                     'glove.6B.50d', 'glove.6B.100d', 'glove.6B.200d', 'glove.6B.300d']
         pattern = {"model_name":[str, ""], "emb_dim":[int, 100], "use_pretrained_word_embedding":[str, ""], 
-                    "hidden_dim":[int, 256], "n_layers":[int, 2], "bidirectional":[bool, True], 
+                    "hidden_dim":[int, 256], "n_layers":[int, 2], "bidirectional":[bool_flag, True], 
                     "n_filters":[int, 100], "filter_sizes":[list, [3,4,5]], "tokenize" : [str, 'spacy'], 
-                    "max_vocab_size":[int, None], "train_embedding" : [bool, True]}
+                    "max_vocab_size":[int, None], "train_embedding" : [bool_flag, True]}
         model_params = {p[0] : p[1] for p in [p.split(":") for p in params.simple_model.split(",")]}
         assert "model_name" in model_params
         assert all([k in pattern.keys() for k in model_params.keys()])
