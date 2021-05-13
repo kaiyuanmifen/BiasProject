@@ -117,16 +117,22 @@ class Metrics():
         self.device = device
         self.topK = topK
         
+        # https://github.com/PyTorchLightning/metrics/blob/master/torchmetrics/classification/f_beta.py#L221
+        #mdmc_average = "samplewise"
+        mdmc_average = "global"
+        
         val_metrics = {
             'hamming_dist': HammingDistance() if HammingDistance is not None else None, 
             'iou': IoU(num_classes=num_classes),
             'auroc': AUROC(num_classes=num_classes), 
-            'f1': F1(num_classes=num_classes, multilabel=True), 
-            'avg_precision': AveragePrecision(num_classes=num_classes)
+            'f1': F1(num_classes=num_classes, multilabel=True, mdmc_average = mdmc_average), 
+            'avg_precision': AveragePrecision(num_classes=num_classes),
+            #'acc': Accuracy(num_classes=num_classes, mdmc_average = mdmc_average)
         }
         
         for k in range(1, topK+1):
             val_metrics["top%d"%k] = Accuracy(top_k=k) 
+            val_metrics["top%d_f1"%k] = F1(top_k=k)
         
         self.val_metrics = torch.nn.ModuleDict(val_metrics).to(self.device)
 
@@ -151,7 +157,9 @@ class Metrics():
 
         for k in range(1, self.topK+1):
             results["top%d_acc"%k] = self.val_metrics['top%d'%k](predictions, y).item()*100
+            results["top%d_f1_good"%k] = self.val_metrics["top%d_f1"%k](predictions, y).item()*100
             self.val_metrics['top%d'%k].reset()
+            self.val_metrics["top%d_f1"%k].reset()
 
         # array of ap for each class
         avg_precision = self.val_metrics['avg_precision'](predictions, y) 
@@ -337,20 +345,26 @@ def get_score(collect, prefix, params, inv="", add_output = False) :
     for k, v in s.items() :
         scores["%strue_%s_%s"%(inv, prefix, k)] = v 
 
-    pl_metrics = Metrics(device = params.device, num_classes = params.n_labels, topK = params.topK)
+    try :
+        pl_metrics = Metrics(device = params.device, num_classes = params.n_labels, topK = params.topK)
+        #pl_metrics = None
+    except :
+        pl_metrics = None
 
-    s = pl_metrics(logits, targets = y2)
-    for k, v in s.items() :
-        scores["%spl_multiclass_%s_%s"%(inv, prefix, k)] = v 
+    if pl_metrics is not None :
+        s = pl_metrics(logits, targets = y2)
+        for k, v in s.items() :
+            scores["%spl_multiclass_%s_%s"%(inv, prefix, k)] = v 
 
     if inv == "" :
         y1 = torch.cat(collect["y1"], dim=0)
         #print("y1", prefix, inv, y1)
         if add_output :
             scores["%sy1_%s"%(inv, prefix)] = y1
-        s = pl_metrics(logits, targets = y1)
-        for k, v in s.items() :
-            scores["%spl_multilabel_%s_%s"%(inv, prefix, k)] = v 
+        if pl_metrics is not None :
+            s = pl_metrics(logits, targets = y1)
+            for k, v in s.items() :
+                scores["%spl_multilabel_%s_%s"%(inv, prefix, k)] = v 
             
         for k in range(1, params.topK+1):
             k_acc, _, _, _, _ = top_k(logits = logits.detach().cpu(), y=y1, k=k)

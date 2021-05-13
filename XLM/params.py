@@ -412,7 +412,8 @@ config_dic = {
     "finetune_layers":[str, ""],
     "weighted_training":[bool, False],
     "optimizer_e":[str, "adam,lr=0.0001"],
-    "optimizer_p":[str, "adam,lr=0.0001"]
+    "optimizer_p":[str, "adam,lr=0.0001"],
+    "simple_model":[str, ""]
 }
 
 def from_config_file(params):

@@ -246,7 +246,11 @@ eval_bleu         # also evaluate the BLEU score
 
 
 ```bash
+# If you want to use google bert
+pip install transformers
+# If you want to use pretrained XLM, or RNN/LSTM/CNN without pretrained word embedding (charngram, fasttext, glove) or with pretrained word embedding, but will going to fine-tune on your data
 pip install fastbpe
+# for metrics (accuracy, f1-score, ...)
 pip install pytorch_lightning -qqq
 # this repository supports pytorch_lightning version 1.2.7
 ```
