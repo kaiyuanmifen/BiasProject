@@ -278,30 +278,31 @@ class TransformerModel(nn.Module):
 
         # model parameters
         self.dim = params.emb_dim       # 512 by default
-        #self.hidden_dim = self.dim * 4  # 2048 by default
-        self.hidden_dim = params.dim_feedforward  # 2048 by default
-        self.n_heads = params.n_heads   # 8 by default
-        self.n_layers = params.n_layers
-        self.dropout = params.dropout
-        self.attention_dropout = params.attention_dropout
-        assert self.dim % self.n_heads == 0, 'transformer dim must be a multiple of n_heads'
+        if getattr(self, 'backbone', None) is None :
+            #self.hidden_dim = self.dim * 4  # 2048 by default
+            self.hidden_dim = params.dim_feedforward  # 2048 by default
+            self.n_heads = params.n_heads   # 8 by default
+            self.n_layers = params.n_layers
+            self.dropout = params.dropout
+            self.attention_dropout = params.attention_dropout
+            assert self.dim % self.n_heads == 0, 'transformer dim must be a multiple of n_heads'
 
-        # TIM layers positions an parameters
-        self.tim_layers_pos = []
-        self.use_mine = params.use_mine
-        if params.tim_layers_pos != ""  and not self.is_decoder:
-            self.tim_layers_pos = [int(pos) for pos in params.tim_layers_pos.split(",")]
-            assert all([ 0 <= pos <= params.n_layers - 1 for pos in self.tim_layers_pos])
-            self.n_s, self.H, self.H_c = params.n_s, params.H, params.H_c
-            self.custom_mha = params.custom_mha
-            self.d_k, self.d_v = params.d_k, params.d_v
-            if not self.use_mine :
-                assert self.d_v == self.d_k == self.dim
-            elif not self.custom_mha :
-                d_mech = self.dim // self.n_s
-                self.d_k = d_mech // self.H
-                self.d_v = d_mech // self.H
-                assert self.H == self.H_c
+            # TIM layers positions an parameters
+            self.tim_layers_pos = []
+            self.use_mine = params.use_mine
+            if params.tim_layers_pos != ""  and not self.is_decoder:
+                self.tim_layers_pos = [int(pos) for pos in params.tim_layers_pos.split(",")]
+                assert all([ 0 <= pos <= params.n_layers - 1 for pos in self.tim_layers_pos])
+                self.n_s, self.H, self.H_c = params.n_s, params.H, params.H_c
+                self.custom_mha = params.custom_mha
+                self.d_k, self.d_v = params.d_k, params.d_v
+                if not self.use_mine :
+                    assert self.d_v == self.d_k == self.dim
+                elif not self.custom_mha :
+                    d_mech = self.dim // self.n_s
+                    self.d_k = d_mech // self.H
+                    self.d_v = d_mech // self.H
+                    assert self.H == self.H_c
 
         # embeddings
         self.position_embeddings = Embedding(N_MAX_POSITIONS, self.dim)
@@ -312,59 +313,65 @@ class TransformerModel(nn.Module):
         self.embeddings = Embedding(self.n_words, self.dim, padding_idx=self.pad_index)
         self.layer_norm_emb = nn.LayerNorm(self.dim, eps=1e-12)
 
-        # transformer layers
-        self.attentions = nn.ModuleList()
-        self.layer_norm1 = nn.ModuleList()
-        self.ffns = nn.ModuleList()
-        self.layer_norm2 = nn.ModuleList()
-        if self.tim_layers_pos :
-            self.tim_layers = nn.ModuleList()
-        if self.is_decoder:
-            self.layer_norm15 = nn.ModuleList()
-            self.encoder_attn = nn.ModuleList()
+        if getattr(params, "simple_model", "") :
+            #self.backbone = build_model(params, logger, pre_trainer = None)
+            self.backbone = params.model_class(1, params = params, logger = logger, with_output = False).to(params.device)
+            self.backbone.embedding = nn.Identity()
+            #self.backbone.pred_layer = None
+        else :
+            # transformer layers
+            self.attentions = nn.ModuleList()
+            self.layer_norm1 = nn.ModuleList()
+            self.ffns = nn.ModuleList()
+            self.layer_norm2 = nn.ModuleList()
+            if self.tim_layers_pos :
+                self.tim_layers = nn.ModuleList()
+            if self.is_decoder:
+                self.layer_norm15 = nn.ModuleList()
+                self.encoder_attn = nn.ModuleList()
 
-        # memories
-        self.memories = nn.ModuleDict()
-        if getattr(params, 'use_memory', False):
-            mem_positions = params.mem_enc_positions if is_encoder else params.mem_dec_positions
-            for layer_id, pos in mem_positions:
-                assert 0 <= layer_id <= params.n_layers - 1
-                assert pos in ['in', 'after']
-                self.memories['%i_%s' % (layer_id, pos)] = HashingMemory.build(self.dim, self.dim, params)
-        
-        for layer_id in range(self.n_layers):
-            if layer_id in self.tim_layers_pos :
-                if self.use_mine :
-                    self.tim_layers.append(
-                        TIM_EncoderLayer(self.dim, self.hidden_dim, self.n_s, self.d_k, self.d_v, 
-                                        self.H, self.H_c, 
-                                        custom_mha = None if self.custom_mha else MultiHeadAttention)
-                    )
-                else :
-                    self.tim_layers.append(
-                        TransformerEncoderLayer(
-                                                d_ffn=self.hidden_dim,
-                                                nhead=self.n_heads,
-                                                kdim=self.d_k,
-                                                vdim=self.d_v,
-                                                dropout=self.attention_dropout,
-                                                activation= nn.GELU if params.gelu_activation else nn.ReLU,
-                                                num_modules=self.n_s,
-                                                use_group_comm = params.use_group_comm
+            # memories
+            self.memories = nn.ModuleDict()
+            if getattr(params, 'use_memory', False):
+                mem_positions = params.mem_enc_positions if is_encoder else params.mem_dec_positions
+                for layer_id, pos in mem_positions:
+                    assert 0 <= layer_id <= params.n_layers - 1
+                    assert pos in ['in', 'after']
+                    self.memories['%i_%s' % (layer_id, pos)] = HashingMemory.build(self.dim, self.dim, params)
+            
+            for layer_id in range(self.n_layers):
+                if layer_id in self.tim_layers_pos :
+                    if self.use_mine :
+                        self.tim_layers.append(
+                            TIM_EncoderLayer(self.dim, self.hidden_dim, self.n_s, self.d_k, self.d_v, 
+                                            self.H, self.H_c, 
+                                            custom_mha = None if self.custom_mha else MultiHeadAttention)
                         )
-                    )
-                    _,_ = self.tim_layers[-1](src = torch.rand((1, 1, self.dim)), init_params = True)
-            else :
-                self.attentions.append(MultiHeadAttention(self.n_heads, self.dim, dropout=self.attention_dropout))
-                self.layer_norm1.append(nn.LayerNorm(self.dim, eps=1e-12))
-                if self.is_decoder:
-                    self.layer_norm15.append(nn.LayerNorm(self.dim, eps=1e-12))
-                    self.encoder_attn.append(MultiHeadAttention(self.n_heads, self.dim, dropout=self.attention_dropout))
-                if ('%i_in' % layer_id) in self.memories:
-                    self.ffns.append(None)
-                else:
-                    self.ffns.append(TransformerFFN(self.dim, self.hidden_dim, self.dim, dropout=self.dropout, gelu_activation=params.gelu_activation))
-                self.layer_norm2.append(nn.LayerNorm(self.dim, eps=1e-12))
+                    else :
+                        self.tim_layers.append(
+                            TransformerEncoderLayer(
+                                                    d_ffn=self.hidden_dim,
+                                                    nhead=self.n_heads,
+                                                    kdim=self.d_k,
+                                                    vdim=self.d_v,
+                                                    dropout=self.attention_dropout,
+                                                    activation= nn.GELU if params.gelu_activation else nn.ReLU,
+                                                    num_modules=self.n_s,
+                                                    use_group_comm = params.use_group_comm
+                            )
+                        )
+                        _,_ = self.tim_layers[-1](src = torch.rand((1, 1, self.dim)), init_params = True)
+                else :
+                    self.attentions.append(MultiHeadAttention(self.n_heads, self.dim, dropout=self.attention_dropout))
+                    self.layer_norm1.append(nn.LayerNorm(self.dim, eps=1e-12))
+                    if self.is_decoder:
+                        self.layer_norm15.append(nn.LayerNorm(self.dim, eps=1e-12))
+                        self.encoder_attn.append(MultiHeadAttention(self.n_heads, self.dim, dropout=self.attention_dropout))
+                    if ('%i_in' % layer_id) in self.memories:
+                        self.ffns.append(None)
+                    else:
+                        self.ffns.append(TransformerFFN(self.dim, self.hidden_dim, self.dim, dropout=self.dropout, gelu_activation=params.gelu_activation))
+                    self.layer_norm2.append(nn.LayerNorm(self.dim, eps=1e-12))
 
         # output layer
         if self.with_output:
@@ -442,48 +449,52 @@ class TransformerModel(nn.Module):
         tensor = self.layer_norm_emb(tensor)
         tensor = F.dropout(tensor, p=self.dropout, training=self.training)
         tensor *= mask.unsqueeze(-1).to(tensor.dtype)
-
-        # transformer layers
-        i, j = 0, 0
-        for k in range(self.n_layers):
-            if k in self.tim_layers_pos :
-                src_key_padding_mask = attn_mask
-                if self.custom_mha or not self.use_mine : 
-                    src_key_padding_mask = ~attn_mask.to(torch.bool)
-                if self.use_mine :
-                    tensor, _,_ = self.tim_layers[j](tensor, src_key_padding_mask = src_key_padding_mask)
+        
+        if getattr(self, 'backbone', None) is not None :
+            tensor = self.backbone.fwd(tensor, lengths, mask)
+            tensor *= mask.unsqueeze(-1).to(tensor.dtype)
+        else :
+            # transformer layers
+            i, j = 0, 0
+            for k in range(self.n_layers):
+                if k in self.tim_layers_pos :
+                    src_key_padding_mask = attn_mask
+                    if self.custom_mha or not self.use_mine : 
+                        src_key_padding_mask = ~attn_mask.to(torch.bool)
+                    if self.use_mine :
+                        tensor, _,_ = self.tim_layers[j](tensor, src_key_padding_mask = src_key_padding_mask)
+                    else :
+                        tensor,_ = self.tim_layers[j](tensor, src_key_padding_mask = src_key_padding_mask)
+                    j += 1
                 else :
-                    tensor,_ = self.tim_layers[j](tensor, src_key_padding_mask = src_key_padding_mask)
-                j += 1
-            else :
-                # self attention
-                attn = self.attentions[i](tensor, attn_mask, cache=cache)
-                attn = F.dropout(attn, p=self.dropout, training=self.training)
-                tensor = tensor + attn
-                tensor = self.layer_norm1[i](tensor)
-
-                # encoder attention (for decoder only)
-                if self.is_decoder and src_enc is not None:
-                    attn = self.encoder_attn[i](tensor, src_mask, kv=src_enc, cache=cache)
+                    # self attention
+                    attn = self.attentions[i](tensor, attn_mask, cache=cache)
                     attn = F.dropout(attn, p=self.dropout, training=self.training)
                     tensor = tensor + attn
-                    tensor = self.layer_norm15[i](tensor)
+                    tensor = self.layer_norm1[i](tensor)
 
-                # FFN
-                if ('%i_in' % i) in self.memories:
-                    tensor = tensor + self.memories['%i_in' % i](tensor)
-                else:
-                    tensor = tensor + self.ffns[i](tensor)
-                tensor = self.layer_norm2[i](tensor)
+                    # encoder attention (for decoder only)
+                    if self.is_decoder and src_enc is not None:
+                        attn = self.encoder_attn[i](tensor, src_mask, kv=src_enc, cache=cache)
+                        attn = F.dropout(attn, p=self.dropout, training=self.training)
+                        tensor = tensor + attn
+                        tensor = self.layer_norm15[i](tensor)
 
-                # memory
-                if ('%i_after' % i) in self.memories:
-                    tensor = tensor + self.memories['%i_after' % i](tensor)
-                # TODO: add extra layer norm here?
+                    # FFN
+                    if ('%i_in' % i) in self.memories:
+                        tensor = tensor + self.memories['%i_in' % i](tensor)
+                    else:
+                        tensor = tensor + self.ffns[i](tensor)
+                    tensor = self.layer_norm2[i](tensor)
 
-                i += 1
+                    # memory
+                    if ('%i_after' % i) in self.memories:
+                        tensor = tensor + self.memories['%i_after' % i](tensor)
+                    # TODO: add extra layer norm here?
 
-            tensor *= mask.unsqueeze(-1).to(tensor.dtype)
+                    i += 1
+
+                tensor *= mask.unsqueeze(-1).to(tensor.dtype)
 
         # update cache length
         if cache is not None:

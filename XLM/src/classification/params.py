@@ -7,7 +7,37 @@
 
 import os
 from ..utils import bool_flag
-
+def __main__(params) :
+    params.use_pretrained_word_embedding = False
+    #params.simple_model = "model_name:RNN,emb_dim:100,use_pretrained_word_embedding:,train_embedding:True,tokenize:spacy,hidden_dim:256,n_layers:2,bidirectional:True"
+    #params.simple_model = "model_name:RNN,emb_dim:100,use_pretrained_word_embedding:glove.6B.50d,train_embedding:True,tokenize:spacy,hidden_dim:256,n_layers:2,bidirectional:True"
+    #params.simple_model = "model_name:CNN,emb_dim:100,use_pretrained_word_embedding:,train_embedding:True,tokenize:spacy,hidden_dim:256,n_filters:100,filter_sizes:3-4-5"
+    #params.simple_model = "model_name:CNN,emb_dim:100,use_pretrained_word_embedding:glove.6B.50d,hidden_dim:256,train_embedding:True,tokenize:spacy,n_filters:100,filter_sizes:3-4-5"
+    
+    if params.simple_model :
+        #params.max_vocab_size = None
+        pretrained_word_embedding = ['charngram.100d', 'fasttext.en.300d', 'fasttext.simple.300d', 'glove.42B.300d', 'glove.840B.300d',
+                                    'glove.twitter.27B.25d', 'glove.twitter.27B.50d', 'glove.twitter.27B.100d', 'glove.twitter.27B.200d', 
+                                    'glove.6B.50d', 'glove.6B.100d', 'glove.6B.200d', 'glove.6B.300d']
+        pattern = {"model_name":[str, ""], "emb_dim":[int, 100], "use_pretrained_word_embedding":[str, ""], 
+                    "hidden_dim":[int, 256], "n_layers":[int, 2], "bidirectional":[bool_flag, True], 
+                    "n_filters":[int, 100], "filter_sizes":[list, [3,4,5]], "tokenize" : [str, 'spacy'], 
+                    "max_vocab_size":[int, None], "train_embedding" : [bool_flag, True]}
+        model_params = {p[0] : p[1] for p in [p.split(":") for p in params.simple_model.split(",")]}
+        assert "model_name" in model_params
+        assert all([k in pattern.keys() for k in model_params.keys()])
+        if "filter_sizes" in model_params :
+            model_params["filter_sizes"] = [int(fs) for fs in model_params["filter_sizes"].split("-")]
+        if False :
+            for k, v in model_params.items() :
+                setattr(params, k, pattern[k][0](v)) 
+        else :
+            for k, v in pattern.items() :
+                #setattr(params, k, v[0](model_params.get(k, v[1])))  
+                setattr(params, k, v[0](model_params[k]) if k in model_params else v[1])  
+        assert not params.use_pretrained_word_embedding or params.use_pretrained_word_embedding in pretrained_word_embedding
+        #delattr(params, "simple_model")
+        
 def add_argument(parser) :
     parser.add_argument('--version', default=1, const=1, nargs='?',
                         choices=[1, 2, 3, 4, 5, 6, 7], 
@@ -101,40 +131,13 @@ def add_argument(parser) :
                         model_name:RNN,emb_dim:100,use_pretrained_word_embedding:,train_embedding:True,tokenize:spacy,hidden_dim:256,n_layers:2,bidirectional:True \
                         model_name:CNN,emb_dim:100,use_pretrained_word_embedding:,train_embedding:True,tokenize:spacy,hidden_dim:256,n_filters:100,filter_sizes:3-4-5")
     
+    parser.add_argument("--pretrain_config", type=str, default="", help="TODO")
     return parser
 
 def check_parameters(params) :
     assert not (params.google_bert and params.simple_model)
     
-    params.use_pretrained_word_embedding = False
-    #params.simple_model = "model_name:RNN,emb_dim:100,use_pretrained_word_embedding:,train_embedding:True,tokenize:spacy,hidden_dim:256,n_layers:2,bidirectional:True"
-    #params.simple_model = "model_name:RNN,emb_dim:100,use_pretrained_word_embedding:glove.6B.50d,train_embedding:True,tokenize:spacy,hidden_dim:256,n_layers:2,bidirectional:True"
-    #params.simple_model = "model_name:CNN,emb_dim:100,use_pretrained_word_embedding:,train_embedding:True,tokenize:spacy,hidden_dim:256,n_filters:100,filter_sizes:3-4-5"
-    #params.simple_model = "model_name:CNN,emb_dim:100,use_pretrained_word_embedding:glove.6B.50d,hidden_dim:256,train_embedding:True,tokenize:spacy,n_filters:100,filter_sizes:3-4-5"
-    
-    if params.simple_model :
-        #params.max_vocab_size = None
-        pretrained_word_embedding = ['charngram.100d', 'fasttext.en.300d', 'fasttext.simple.300d', 'glove.42B.300d', 'glove.840B.300d',
-                                    'glove.twitter.27B.25d', 'glove.twitter.27B.50d', 'glove.twitter.27B.100d', 'glove.twitter.27B.200d', 
-                                    'glove.6B.50d', 'glove.6B.100d', 'glove.6B.200d', 'glove.6B.300d']
-        pattern = {"model_name":[str, ""], "emb_dim":[int, 100], "use_pretrained_word_embedding":[str, ""], 
-                    "hidden_dim":[int, 256], "n_layers":[int, 2], "bidirectional":[bool_flag, True], 
-                    "n_filters":[int, 100], "filter_sizes":[list, [3,4,5]], "tokenize" : [str, 'spacy'], 
-                    "max_vocab_size":[int, None], "train_embedding" : [bool_flag, True]}
-        model_params = {p[0] : p[1] for p in [p.split(":") for p in params.simple_model.split(",")]}
-        assert "model_name" in model_params
-        assert all([k in pattern.keys() for k in model_params.keys()])
-        if "filter_sizes" in model_params :
-            model_params["filter_sizes"] = [int(fs) for fs in model_params["filter_sizes"].split("-")]
-        if False :
-            for k, v in model_params.items() :
-                setattr(params, k, pattern[k][0](v)) 
-        else :
-            for k, v in pattern.items() :
-                #setattr(params, k, v[0](model_params.get(k, v[1])))  
-                setattr(params, k, v[0](model_params[k]) if k in model_params else v[1])  
-        assert not params.use_pretrained_word_embedding or params.use_pretrained_word_embedding in pretrained_word_embedding
-        #delattr(params, "simple_model")
+    __main__(params)
         
     if not params.google_bert :
         if params.simple_model :

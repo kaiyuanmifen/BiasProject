@@ -413,12 +413,18 @@ config_dic = {
     "weighted_training":[bool, False],
     "optimizer_e":[str, "adam,lr=0.0001"],
     "optimizer_p":[str, "adam,lr=0.0001"],
-    "simple_model":[str, ""]
+    "simple_model":[str, ""],
+    "pretrain_config":[str, ""]
 }
 
-def from_config_file(params):
-    if os.path.isfile(params.config_file):
-        with open(params.config_file) as json_data:
+def from_config_file(params, config_file = None):
+    if config_file is None :
+        overwrite = True
+        config_file = params.config_file
+    else :
+        overwrite = False
+    if os.path.isfile(config_file):
+        with open(config_file) as json_data:
             data_dict = json.load(json_data)
             for key, value in data_dict.items():
                 conf = config_dic.get(key, "__key_error__")
@@ -438,68 +444,11 @@ def from_config_file(params):
                         value = conf[0](value)
                     except :
                         pass
-                    if getattr(params, key, conf[1]) == conf[1] :
+                    if overwrite :
+                        if getattr(params, key, conf[1]) == conf[1] :
+                            setattr(params, key, value)
+                    else :
                         setattr(params, key, value)
 
     return params
 
-def three_point(objectif, lgs, name) :
-    if objectif == "..." :
-        result = ""
-        if name == "clm" : 
-            langs = lgs.split("-")
-            result = langs[0]
-            for lg in langs[1:] :
-                result = result+","+lg
-        if name == "mlm" :
-            langs = lgs.split("-")
-            result = langs[0]
-            for lg in langs[1:] :
-                result = result+","+lg
-            l = len(langs)
-            for i in range(l-1):
-                for j in range(i+1, l):
-                    li = langs[i]
-                    lj = langs[j]
-                    result = result+","+li+"-"+lj
-        elif name == "mt" :
-            langs = lgs.split("-")
-            l = len(langs)
-            for i in range(l-1):
-                for j in range(i+1, l):
-                    li = langs[i]
-                    lj = langs[j]
-                    result = result+","+li+"-"+lj
-                    result = result+","+lj+"-"+li
-            if result.startswith(","):
-                result = result[1:]
-        elif name == "ae" :
-            langs = lgs.split("-")
-            result = langs[0]
-            for lg in langs[1:] :
-                result = result+","+lg
-        elif name == "bt" :
-            langs = lgs.split("-")
-            l = len(langs)
-            for i in range(l-1):
-                for j in range(i+1, l):
-                    li = langs[i]
-                    lj = langs[j]
-                    result = result+","+li+"-"+lj+"-"+li
-                    result = result+","+lj+"-"+li+"-"+lj
-            if result.startswith(","):
-                result = result[1:]
-        elif name == "pc" : 
-            langs = lgs.split("-")
-            l = len(langs)
-            for i in range(l-1):
-                for j in range(i+1, l):
-                    li = langs[i]
-                    lj = langs[j]
-                    result = result+","+li+"-"+lj
-                    result = result+","+lj+"-"+li
-            if result.startswith(","):
-                result = result[1:]
-        return result
-    else :      
-        return objectif

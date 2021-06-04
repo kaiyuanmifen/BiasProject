@@ -126,3 +126,33 @@ def one_errors(c: Tensor, y: Tensor) -> Tensor:
     https://github.com/idocx/BP_MLL_Pytorch/blob/master/bp_mll.py"""
     p, _ = c.size()
     return (y[0, torch.argmax(c, dim=1)] != 1).float().sum() / p
+
+
+class FocalLoss(nn.modules.loss._WeightedLoss):
+    """https://discuss.pytorch.org/t/is-this-a-correct-implementation-for-focal-loss-in-pytorch/43327/16?u=pascal_notsawo"""
+    def __init__(self, alpha=.25, gamma=2):
+        super(FocalLoss, self).__init__()
+        #self.alpha = torch.tensor([alpha, 1-alpha])
+        self.gamma = gamma
+
+    def forward(self, input, target, reduction='mean', weight=None):
+        ce_loss = F.cross_entropy(input, target, reduction=reduction, weight=weight) 
+        pt = torch.exp(-ce_loss)
+        focal_loss = ((1 - pt) ** self.gamma * ce_loss).mean()
+        return focal_loss
+
+
+class BCEFocalLoss(nn.Module):
+    "Non weighted version of Focal Loss"
+    def __init__(self, alpha=.25, gamma=2):
+        super(BCEFocalLoss, self).__init__()
+        self.alpha = torch.tensor([alpha, 1-alpha])
+        self.gamma = gamma
+
+    def forward(self, inputs, targets, weight = None):
+        bce_loss = F.binary_cross_entropy_with_logits(inputs, targets, weight = weight, reduction='none')
+        targets = targets.type(torch.long)
+        at = self.alpha.to(targets.device).gather(0, targets.data.view(-1))
+        pt = torch.exp(-bce_loss)
+        F_loss = at*(1-pt)**self.gamma * bce_loss
+        return F_loss.mean()

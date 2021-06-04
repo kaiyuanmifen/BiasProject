@@ -87,9 +87,9 @@ def initialize_exp(params):
     # create a logger
     # our
     if params.eval_only :
-      log_file = 'eval'
+        log_file = 'eval'
     else :
-      log_file = 'train'
+        log_file = 'train'
     
     if not params.log_file_prefix :
         i = 1
@@ -102,8 +102,7 @@ def initialize_exp(params):
     
     logger = create_logger(os.path.join(params.dump_path, log_file), rank=getattr(params, 'global_rank', 0))
     logger.info("============ Initialized logger ============")
-    logger.info("\n".join("%s: %s" % (k, str(v))
-                          for k, v in sorted(dict(vars(params)).items())))
+    logger.info("\n".join("%s: %s" % (k, str(v)) for k, v in sorted(dict(vars(params)).items())))
     logger.info("The experiment will be stored in %s\n" % params.dump_path)
     logger.info("Running command: %s" % command)
     logger.info("")
@@ -249,7 +248,6 @@ def set_sampling_probs(data, params):
         probs = np.array([p ** coeff for p in probs])
         probs /= probs.sum()
         params.para_probs = probs
-
 
 def concat_batches(x1, len1, lang1_id, x2, len2, lang2_id, pad_idx, eos_idx, reset_positions):
     """

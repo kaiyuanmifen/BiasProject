@@ -27,6 +27,7 @@ import json
 #############
 
 from .utils import path_leaf
+from .. import one_step, end_of_epoch as pretrainer_eoe
 
 logger = getLogger()
 
@@ -36,7 +37,7 @@ tmp_type = lambda name : "ppl" in name or "loss" in name
 
 class Trainer(object):
     """Training Helper Class"""
-    def __init__(self, params, model, optimizers, train_data_iter, val_data_iter, logger):
+    def __init__(self, params, model, optimizers, train_data_iter, val_data_iter, logger, pre_trainer = None, evaluator = None):
         self.params = params
         self.model = model
         self.optimizers = optimizers # optim
@@ -47,6 +48,8 @@ class Trainer(object):
 
         self.device = params.device # device name
         self.logger = logger
+        self.pre_trainer = pre_trainer
+        self.evaluator = evaluator
 
         # epoch / iteration size
         self.epoch_size = self.params.epoch_size
@@ -223,8 +226,9 @@ class Trainer(object):
                 self.logger.info("%s -> %.6f" % (key, value))
             except TypeError: #must be real number, not dict
                 self.logger.info("%s -> %s" % (key, value))
-        if self.params.is_master:
-            self.logger.info("__log__:%s" % json.dumps(scores))
+                
+        #if self.params.is_master:
+        #    self.logger.info("__log__:%s" % json.dumps(scores))
 
     def save_best_model(self, scores):
         """
@@ -436,6 +440,52 @@ class Trainer(object):
         self.logger.info("")
         self.logger.info(s_iter + progress + s_speed + s_stat + s_lr)
 
+    def classif_step(self, get_loss, batch, total_stats, i) :
+        # forward / loss
+        loss, stats = get_loss(self.model, batch, self.params, self.train_data_iter.weights)
+        #loss = loss.mean() # mean() for Data Parallelism
+        
+        # optimize
+        self.optimize(loss)
+
+        total_stats.append(stats)
+
+        # number of processed sentences / words
+        self.n_sentences += self.params.batch_size
+        self.stats['processed_s'] += self.params.batch_size
+        self.stats['processed_w'] += stats['n_words']
+        self.stats['progress'] = min(int(((i+1)/self.params.train_num_step)*100), 100) 
+
+        for name in stats.keys() :
+            if ("loss" in name or 'acc' in name or "f1_score" in name or "IoU" in name or "MCC" in name) and not "top" in name:
+                self.stats[name] = self.stats.get(name, []) + [stats[name]]
+
+        self.iter()
+        self.print_stats()
+        
+    def one_epoch(self, get_loss):
+        self.model.train() # train mode
+        total_stats = []
+        a, b = True, True
+        i = 0
+        train_dataloader = iter(self.train_data_iter)
+        while a or b :
+            # pre_training step
+            if b :
+                one_step(self.pre_trainer, self.pre_trainer.params)
+                b = self.pre_trainer.n_sentences < self.pre_trainer.epoch_size
+            
+            # classif step
+            if a :
+                try :
+                    batch = next(train_dataloader)
+                    self.classif_step(get_loss, batch, total_stats, i)
+                except StopIteration :
+                    #train_dataloader = iter(self.train_data_iter)
+                    a = False
+                i+=1
+        return total_stats
+    
     def train_step(self, get_loss):
         self.model.train() # train mode
         total_stats = []
@@ -485,24 +535,43 @@ class Trainer(object):
             
             self.logger.info("============ Starting epoch %i ... ============" % self.epoch)
             self.n_sentences = 0
+            
+            if self.pre_trainer is not None :
+                self.pre_trainer.n_sentences = 0
+                self.pre_trainer.stats['progress'] = 0
+        
             for k in self.stats.keys():
                 if "avg" in k :
                     self.stats[k] = []
-            train_stats = self.train_step(get_loss)
+            
+            if self.params.pretrain :
+                train_stats = self.one_epoch(get_loss)
+            else :
+                train_stats = self.train_step(get_loss)
             
             self.logger.info("============ End of epoch %i ============" % self.epoch)
 
             val_stats = self.eval_step(get_loss)
-
+            
+            if self.params.pretrain :
+                pre_train_scores = pretrainer_eoe(self.pre_trainer.params, trainer = self.pre_trainer, evaluator = self.evaluator, end = False)
+            else :
+                pre_train_scores = {}
+                
             scores = end_of_epoch([val_stats, train_stats], self.params)
-            self.all_scores.append(scores)
+            
+            s = {**scores, **pre_train_scores}
+            self.all_scores.append(s)
             
             self.plot_score(scores)
 
             # end of epoch
-            self.save_best_model(scores)
+            if self.params.pretrain :
+                pretrainer_eoe(self.pre_trainer.params, logger = self.logger, trainer = self.pre_trainer, scores = pre_train_scores)
+
+            self.save_best_model(s)
             self.save_periodic()
-            self.end_epoch(scores)
+            self.end_epoch(s)
             
         plot_all_scores(self.all_scores)
         

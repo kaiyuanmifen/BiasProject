@@ -129,8 +129,8 @@ class SentenceEmbedder(object):
         self.out_dim = model.dim
         self.n_words = model.n_words
 
-    def train(self):
-        self.model.train()
+    def train(self, mode: bool = True):
+        self.model.train(mode)
 
     def eval(self):
         self.model.eval()

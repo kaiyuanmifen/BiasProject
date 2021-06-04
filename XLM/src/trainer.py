@@ -140,7 +140,7 @@ class Trainer(object):
             self.n_sentences = {}
             
             self.stats = {}
-             
+
             for lgs in params.meta_params.keys() :
                 self.n_sentences[lgs] = 0
                 self.stats[lgs] = OrderedDict(

@@ -16,9 +16,14 @@ from .models import XLMBertClassifier, GoogleBertClassifier, RNNClassifier, LSTM
 from .dataset import BiasClassificationDataset
 from .utils import  init_pretrained_word_embedding, get_data_path
 
-def build_model(params, logger) :
+def build_model(params, logger, pre_trainer = None) :
     if params.model_name == "XLM" :
         model_class = XLMBertClassifier
+        if pre_trainer is not None :
+            model = model_class(n_labels = params.n_labels, params = params, logger = logger, pre_trainer = pre_trainer).to(params.device)
+            logger.info("pred_layer")
+            logger.info(model.pred_layer)
+            return model
     elif params.model_name == "google_bert" :
         model_class = GoogleBertClassifier
     elif params.model_name == "RNN" :

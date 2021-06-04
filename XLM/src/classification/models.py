@@ -18,6 +18,7 @@ import copy
 from .metrics import top_k
 from .utils import special_tokens, to_tensor
 from .loss import bias_classification_loss, bce_bias_classification_loss, BiasClassificationLoss, kl_divergence_loss, nll_loss, bp_mll_loss, gaussian_nll_loss
+from .loss import FocalLoss, BCEFocalLoss
 
 from ..utils import truncate, AttrDict
 from ..optim import get_optimizer
@@ -160,6 +161,7 @@ class PredLayer4Classification(nn.Module):
                         #self.criterion = bce_bias_classification_loss
                         #self.criterion = bp_mll_loss
                         #self.criterion = gaussian_nll_loss
+                        #self.criterion = BCEFocalLoss()
                     elif self.kl_div : 
                         self.criterion = kl_divergence_loss
                     else :
@@ -168,6 +170,7 @@ class PredLayer4Classification(nn.Module):
                 else :
                     #self.criterion = nn.CrossEntropyLoss(weight=weight, reduction='mean').to(params.device)
                     self.criterion = F.cross_entropy
+                    #self.criterion = FocalLoss()
 
     def forward(self, x, y, weights = None, get_scores=True):
         """
@@ -175,6 +178,7 @@ class PredLayer4Classification(nn.Module):
         """
         #x = F.normalize(input = x, p=2, dim=1, eps=1e-12, out=None)
         x = self.proj(x)
+        #x = F.dropout(x, p=0.1, training=True)
         if self.asm is False:
             if self.bce : # For binary_cross_entropy_with_logits, binarize the target
                 w = (y != 0)
@@ -267,6 +271,7 @@ class PredLayer4Workers(nn.Module):
         
         if self.do_proj :
             criterion = F.binary_cross_entropy_with_logits
+            #criterion = BCEFocalLoss()
             self.classifier = PredLayer4Classification(hidden_dim, n_labels = 1, params = params, criterion = criterion)
             self.sigmoid = nn.Sigmoid()
         
@@ -333,6 +338,7 @@ class PredLayer4BinaryClassification(nn.Module):
             self.proj = nn.Identity()
         
         criterion = F.binary_cross_entropy_with_logits
+        #criterion = BCEFocalLoss()
         self.classifier = PredLayer4Classification(hidden_dim, n_labels = 1, params = params, criterion = criterion)
         self.sigmoid = nn.Sigmoid()
         
@@ -361,77 +367,99 @@ class XLMBertClassifier(nn.Module):
     debug_num = 1 : Transformer + Linear + Tanh + Dropout + Linear
     debug_num = 2 : Transformer + GRU + Dropout + Linear'
     """
-    def __init__(self, n_labels, params, logger):
+    def __init__(self, n_labels, params, logger, pre_trainer = None):
         super().__init__()
         
-        logger.warning("Reload dico & transformer model path from %s"%params.model_path)
-        reloaded = torch.load(params.model_path, map_location=params.device)
-        pretrain_params = AttrDict(reloaded['params'])
-        logger.info("Supported languages: %s" % ", ".join(pretrain_params.lang2id.keys()))
+        if pre_trainer is None :
+            logger.warning("Reload dico & transformer model path from %s"%params.model_path)
+            reloaded = torch.load(params.model_path, map_location=params.device)
+            pretrain_params = AttrDict(reloaded['params'])
+            logger.info("Supported languages: %s" % ", ".join(pretrain_params.lang2id.keys()))
 
-        # build dictionary / build encoder / build decoder / reload weights
-        try :
-            dico_rest=4+len(special_tokens) # 4 ~ BOS_WORD, EOS_WORD, PAD_WORD, UNK_WORD
-            dico = Dictionary(reloaded['dico_id2word'], reloaded['dico_word2id'], reloaded['dico_counts'], rest=dico_rest)
-        except AssertionError : # assert all(self.id2word[self.rest + i] == SPECIAL_WORD % i for i in range(SPECIAL_WORDS))
-            dico = Dictionary(reloaded['dico_id2word'], reloaded['dico_word2id'], reloaded['dico_counts'])
-        self.dico = dico
+            # build dictionary / build encoder / build decoder / reload weights
+            try :
+                dico_rest=4+len(special_tokens) # 4 ~ BOS_WORD, EOS_WORD, PAD_WORD, UNK_WORD
+                dico = Dictionary(reloaded['dico_id2word'], reloaded['dico_word2id'], reloaded['dico_counts'], rest=dico_rest)
+            except AssertionError : # assert all(self.id2word[self.rest + i] == SPECIAL_WORD % i for i in range(SPECIAL_WORDS))
+                dico = Dictionary(reloaded['dico_id2word'], reloaded['dico_word2id'], reloaded['dico_counts'])
+            self.dico = dico
+            
+            # update dictionary parameters
+            pretrain_params.n_words = len(dico)
+            pretrain_params.bos_index = dico.index(BOS_WORD)
+            pretrain_params.eos_index = dico.index(EOS_WORD)
+            pretrain_params.pad_index = dico.index(PAD_WORD)
+            pretrain_params.unk_index = dico.index(UNK_WORD)
+            pretrain_params.mask_index = dico.index(MASK_WORD)
+            for name in ['n_words', 'bos_index', 'eos_index', 'pad_index', 'unk_index', 'mask_index']:
+                setattr(params, name, getattr(pretrain_params, name))
+            
+            for name in ['dropout', 'attention_dropout']:
+                attr = getattr(params, name)
+                if getattr(pretrain_params, name, attr) != attr :
+                    setattr(pretrain_params, name, attr)
+
+            #pretrain_params.emb_dim=64*16
+            #pretrain_params.n_layers=24 
+            #pretrain_params.n_heads=16
+            #pretrain_params.dim_feedforward=2048
+            try :
+                model = TransformerModel(pretrain_params, dico, is_encoder=True, with_output=True).to(params.device)
+            except AttributeError :
+                # For models trained when TIM was not yet integrated : for example XLM pre-trained by facebook AI
+                
+                # AttributeError: 'AttrDict' object has no attribute 'dim_feedforward'
+                # ...................................................'use_mine'
+                # ...
+                setattr(pretrain_params, "dim_feedforward", pretrain_params.emb_dim*4) # https://github.com/facebookresearch/XLM/blob/master/xlm/model/transformer.py#L268
+                setattr(pretrain_params, "use_mine", params.use_mine)
+                setattr(pretrain_params, "tim_layers_pos", params.tim_layers_pos)
+                # ...
+                model = TransformerModel(pretrain_params, dico, is_encoder=True, with_output=True).to(params.device)
+                
+            state_dict = reloaded['model']
+            # handle models from multi-GPU checkpoints
+            if 'checkpoint' in params.model_path:
+                state_dict = {(k[7:] if k.startswith('module.') else k): v for k, v in state_dict.items()}
+            model.load_state_dict(state_dict)
+            
+            model.eval()
+            model = model.to(params.device)
         
-        # update dictionary parameters
-        pretrain_params.n_words = len(dico)
-        pretrain_params.bos_index = dico.index(BOS_WORD)
-        pretrain_params.eos_index = dico.index(EOS_WORD)
-        pretrain_params.pad_index = dico.index(PAD_WORD)
-        pretrain_params.unk_index = dico.index(UNK_WORD)
-        pretrain_params.mask_index = dico.index(MASK_WORD)
-        for name in ['n_words', 'bos_index', 'eos_index', 'pad_index', 'unk_index', 'mask_index']:
-            setattr(params, name, getattr(pretrain_params, name))
-
-        #pretrain_params.emb_dim=64*16
-        #pretrain_params.n_layers=24 
-        #pretrain_params.n_heads=16
-        #pretrain_params.dim_feedforward=2048
-        try :
-            model = TransformerModel(pretrain_params, dico, is_encoder=True, with_output=True).to(params.device)
-        except AttributeError :
-            # For models trained when TIM was not yet integrated : for example XLM pre-trained by facebook AI
+            self.embedder = SentenceEmbedder(model, dico, pretrain_params) #copy.deepcopy(SentenceEmbedder(model, dico, pretrain_params))
+            d_model = model.dim
             
-            # AttributeError: 'AttrDict' object has no attribute 'dim_feedforward'
-            # ...................................................'use_mine'
-            # ...
-            setattr(pretrain_params, "dim_feedforward", pretrain_params.emb_dim*4) # https://github.com/facebookresearch/XLM/blob/master/xlm/model/transformer.py#L268
-            setattr(pretrain_params, "use_mine", params.use_mine)
-            setattr(pretrain_params, "tim_layers_pos", params.tim_layers_pos)
-            # ...
-            model = TransformerModel(pretrain_params, dico, is_encoder=True, with_output=True).to(params.device)
+            # adding missing parameters
+            params.max_batch_size = 0
+            params.n_langs = 1
             
-        state_dict = reloaded['model']
-        # handle models from multi-GPU checkpoints
-        if 'checkpoint' in params.model_path:
-            state_dict = {(k[7:] if k.startswith('module.') else k): v for k, v in state_dict.items()}
-        model.load_state_dict(state_dict)
-        model.eval()
-        model = model.to(params.device)
-        self.embedder = SentenceEmbedder(model, dico, pretrain_params) #copy.deepcopy(SentenceEmbedder(model, dico, pretrain_params))
-        params.freeze_transformer = params.finetune_layers == ""
+            # reload langs from pretrained model
+            #params.n_langs = embedder.pretrain_params['n_langs']
+            #params.id2lang = embedder.pretrain_params['id2lang']
+            #params.lang2id = embedder.pretrain_params['lang2id']
+            params.lang = params.lgs
+            params.lang_id = pretrain_params.lang2id[params.lang]
+            
+            params.freeze_transformer = params.finetune_layers == ""    
+            if params.freeze_transformer :
+                for param in self.embedder.model.parameters():
+                    param.requires_grad = False
+        
+        else :
+            self.dico = pre_trainer.data["dico"]
+            for name in ['n_words', 'bos_index', 'eos_index', 'pad_index', 'unk_index', 'mask_index']+['lang2id', 'n_langs']:
+                setattr(params, name, getattr(pre_trainer.params, name))
+                
+            self.embedder = SentenceEmbedder(pre_trainer.model, self.dico,  pre_trainer.params)
+            d_model = pre_trainer.model.dim
+            if type(params.lgs) == list :
+                params.lang = params.lgs[0]
+            else :
+                params.lang = params.lgs
+            params.lang_id = params.lang2id[params.lang]
+            params.freeze_transformer = False
+            
         self.freeze_transformer = params.freeze_transformer
-        
-        if params.freeze_transformer :
-            for param in self.embedder.model.parameters():
-                param.requires_grad = False
-        
-        # adding missing parameters
-        params.max_batch_size = 0
-        params.n_langs = 1
-        
-        # reload langs from pretrained model
-        #params.n_langs = embedder.pretrain_params['n_langs']
-        #params.id2lang = embedder.pretrain_params['id2lang']
-        #params.lang2id = embedder.pretrain_params['lang2id']
-        params.lang = params.lgs
-        params.lang_id = pretrain_params.lang2id[params.lang]
-
-        d_model = model.dim
         params.hidden_dim = d_model if params.hidden_dim == -1 else params.hidden_dim
         self.pred_layer = get_pred_layer(d_model, n_labels, params).to(params.device)
         self.pred_layer.eval()
@@ -476,10 +504,10 @@ class XLMBertClassifier(nn.Module):
     def __str__(self) :
         return self.embedder.model.__str__() + self.pred_layer.__str__()
     
-    def train(self):
+    def train(self, mode: bool = True):
         if not self.freeze_transformer :
-            self.embedder.train()
-        self.pred_layer.train()
+            self.embedder.train(mode)
+        self.pred_layer.train(mode)
 
     def eval(self):
         self.embedder.eval()
@@ -547,6 +575,12 @@ class GoogleBertClassifier(nn.Module):
         model_name = params.bert_model_name
         logger.warning("Reload BertModel : %s"%model_name)
         embedder = BertModel.from_pretrained(model_name) # load the pre-trained model
+        for module in embedder.modules() :
+            if isinstance(module, nn.Dropout) :
+                #module.p = params.attention_dropout
+                if module.p != params.dropout :
+                    module.p = params.dropout
+                
         embedder.eval()
         self.embedder = embedder.to(params.device)
         params.freeze_transformer = params.finetune_layers == ""
@@ -623,10 +657,10 @@ class GoogleBertClassifier(nn.Module):
         except ValueError: #optimizer got an empty parameter list
             return [optimizer_p]
         
-    def train(self):
+    def train(self, mode):
         if not self.freeze_transformer :
-            self.embedder.train()
-        self.pred_layer.train()
+            self.embedder.train(mode)
+        self.pred_layer.train(mode)
 
     def eval(self):
         self.embedder.eval()
@@ -720,11 +754,11 @@ class SimpleClassifier(nn.Module):
             self.logger.info("Adding %s parameters to optimizer"%type(self.net).__name__)
         return parameters
                 
-    def train(self):
+    def train(self, mode: bool = True):
         if self.train_embedding :
-            self.embedding.train()
-        self.net.train()
-        self.pred_layer.train()
+            self.embedding.train(mode=mode)
+        self.net.train(mode=mode)
+        self.pred_layer.train(mode=mode)
 
     def eval(self):
         self.embedding.eval()
@@ -754,14 +788,18 @@ class SimpleClassifier(nn.Module):
         return [self.vocab.stoi[t] for t in tokens]
 
 class RecurrentClassifier(SimpleClassifier):
-    def __init__(self, n_labels, params, logger, dico : Dictionary = None):
+    def __init__(self, n_labels, params, logger, dico : Dictionary = None, with_output = True):
         super().__init__(n_labels, params, logger, dico)
         
         self.n_layers = params.n_layers
         self.bidirectional = params.bidirectional
-    
-        self.factor = 2 if self.bidirectional else 1
-        self.pred_layer = get_pred_layer(self.hidden_dim * self.factor, n_labels, params).to(params.device)
+        self.with_output = with_output
+
+        if self.with_output :
+            self.factor = 2 if self.bidirectional else 1
+            self.pred_layer = get_pred_layer(self.hidden_dim * self.factor, n_labels, params).to(params.device)
+        else :
+            self.pred_layer = nn.Identity()
         
     def to_tensor(self, sentences):
         if not self.use_pretrained_word_embedding :
@@ -769,9 +807,20 @@ class RecurrentClassifier(SimpleClassifier):
         else :
             return to_tensor(sentences, self.pad_index, tokenize_and_cut = self.tokenize_and_cut, batch_first = False)
     
+    def fwd(self, tensor, lengths, mask):
+        if False : # RuntimeError: start (4) + length (2) exceeds dimension size (4).
+            packed_embedded = nn.utils.rnn.pack_padded_sequence(tensor, lengths, enforce_sorted=False)
+            packed_output, hidden = self.net(packed_embedded)
+            output, output_lengths = nn.utils.rnn.pad_packed_sequence(packed_output)
+            hidden = output.transpose(0, 1)
+            return self.dropout(hidden)
+        else :
+            output, _ = self.net(tensor)
+            return self.dropout(output)
+    
 class RNNClassifier(RecurrentClassifier):
-    def __init__(self, n_labels, params, logger, dico : Dictionary = None):
-        super().__init__(n_labels, params, logger, dico)
+    def __init__(self, n_labels, params, logger, dico : Dictionary = None, with_output = True):
+        super().__init__(n_labels, params, logger, dico, with_output)
         self.init_net(params)
     
     def init_net(self, params) :
@@ -814,10 +863,10 @@ class RNNClassifier(RecurrentClassifier):
             hidden = output.transpose(0, 1)
             
         return self.pred_layer(self.dropout(hidden), y, weights=weights)
-
+    
 class LSTMClassifier(RecurrentClassifier):
-    def __init__(self, n_labels, params, logger, dico : Dictionary = None):
-        super().__init__(n_labels, params, logger, dico)
+    def __init__(self, n_labels, params, logger, dico : Dictionary = None, with_output = True):
+        super().__init__(n_labels, params, logger, dico, with_output)
         self.init_net(params)
     
     def init_net(self, params) :
@@ -861,13 +910,17 @@ class LSTMClassifier(RecurrentClassifier):
         return self.pred_layer(self.dropout(hidden), y, weights=weights)
 
 class ConvolutionalClassifier(SimpleClassifier):
-    def __init__(self, n_labels, params, logger, dico : Dictionary = None):
+    def __init__(self, n_labels, params, logger, dico : Dictionary = None, with_output = True):
         super().__init__(n_labels, params, logger, dico)
         
+        self.with_output = with_output
         self.n_filters = params.n_filters
         self.filter_sizes = params.filter_sizes
-        self.hidden_dim = len(self.filter_sizes) * self.n_filters
-        self.pred_layer = get_pred_layer(self.hidden_dim, n_labels, params).to(params.device)
+        if with_output :
+            self.hidden_dim = len(self.filter_sizes) * self.n_filters
+            self.pred_layer = get_pred_layer(self.hidden_dim, n_labels, params).to(params.device)
+        else :
+            self.pred_layer = nn.Identity()
             
     def to_tensor(self, sentences):
         if not self.use_pretrained_word_embedding :
@@ -876,8 +929,8 @@ class ConvolutionalClassifier(SimpleClassifier):
             return to_tensor(sentences, self.pad_index, tokenize_and_cut = self.tokenize_and_cut, batch_first = True)
     
 class CNNClassifier(ConvolutionalClassifier):
-    def __init__(self, n_labels, params, logger, dico : Dictionary = None):
-        super().__init__(n_labels, params, logger, dico)
+    def __init__(self, n_labels, params, logger, dico : Dictionary = None, with_output = True):
+        super().__init__(n_labels, params, logger, dico, with_output)
         self.init_net(params)
     
     def init_net(self, params) :
@@ -909,9 +962,20 @@ class CNNClassifier(ConvolutionalClassifier):
         
         return self.pred_layer(cat, y, weights=weights)
     
+    def fwd(self, tensor, lengths, mask):
+        print(tensor.shape)
+        tensor = tensor.unsqueeze(dim=1) # bs x 1 x slen x emb_dim
+        conved = [F.relu(conv(tensor)).squeeze(3) for conv in self.net] 
+        print(conved[0].shape)       
+        pooled = [F.max_pool1d(conv, conv.shape[2]).squeeze(2) for conv in conved]
+        tensor = self.dropout(torch.stack(pooled))
+        print(tensor.shape)
+        exit()
+        return tensor
+    
 class CNN1dClassifier(ConvolutionalClassifier):
-    def __init__(self, n_labels, params, logger, dico : Dictionary = None):
-        super().__init__(n_labels, params, logger, dico)
+    def __init__(self, n_labels, params, logger, dico : Dictionary = None, with_output = True):
+        super().__init__(n_labels, params, logger, dico, with_output)
         self.init_net(params)
     
     def init_net(self, params) :
@@ -920,6 +984,7 @@ class CNN1dClassifier(ConvolutionalClassifier):
             nn.Conv1d(in_channels = self.embedding_dim, out_channels = self.n_filters, kernel_size = fs)
             for fs in self.filter_sizes
         ])
+        
     def forward(self, x, lengths, y, positions=None, langs=None, weights = None, get_scores = True) :
         """
         Inputs:
@@ -943,3 +1008,8 @@ class CNN1dClassifier(ConvolutionalClassifier):
             
         return self.pred_layer(cat, y, weights=weights)
 
+    def fwd(self, tensor, lengths, mask):
+        tensor = tensor.permute(0, 2, 1)
+        conved = [F.relu(conv(tensor)) for conv in self.net]
+        pooled = [F.max_pool1d(conv, conv.shape[2]).squeeze(2) for conv in conved]
+        return self.dropout(torch.stack(pooled))

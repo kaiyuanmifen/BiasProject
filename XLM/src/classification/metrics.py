@@ -8,7 +8,13 @@
 import torch
 import torch.nn.functional as F
 
-from pytorch_lightning.metrics import IoU, AUROC, F1, Accuracy, AveragePrecision
+try :
+    from pytorch_lightning.metrics import IoU, AUROC, F1, Accuracy, AveragePrecision
+    pl = True
+except ModuleNotFoundError: #No module named 'pytorch_lightning'
+    IoU, AUROC, F1, Accuracy, AveragePrecision = None, None, None, None, None
+    pl = False
+    
 try :
     from pytorch_lightning.metrics import HammingDistance
 except ImportError : #cannot import name 'HammingDistance' from 'pytorch_lightning.metrics' (....\Anaconda3\lib\site-packages\pytorch_lightning\metrics\__init__.py)
@@ -22,7 +28,6 @@ from sklearn.preprocessing import MultiLabelBinarizer
 import seaborn as sns
 import matplotlib.pyplot as plt
 
-import os
 import numpy as np
 
 import warnings
@@ -115,6 +120,8 @@ def top_k(logits, y, k : int = 1):
 
 class Metrics():
     def __init__(self, device, num_classes, topK = 3) :
+        if not pl :
+            return
         
         self.device = device
         self.topK = topK
@@ -142,6 +149,9 @@ class Metrics():
         self.label_binarizer = MultiLabelBinarizer(classes=self.class_names)
 
     def __call__(self, logits, targets, softmax=True) :
+        if not pl :
+            return {}
+        
         logits = logits.to(self.device)
         targets = targets.to(self.device)
         
