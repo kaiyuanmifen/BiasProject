@@ -395,14 +395,21 @@ class XLMBertClassifier(nn.Module):
                 setattr(params, name, getattr(pretrain_params, name))
             
             for name in ['dropout', 'attention_dropout']:
-                attr = getattr(params, name)
-                if getattr(pretrain_params, name, attr) != attr :
+                attr = getattr(params, name, None)
+                if attr is not None and getattr(pretrain_params, name, attr) != attr :
                     setattr(pretrain_params, name, attr)
 
-            #pretrain_params.emb_dim=64*16
-            #pretrain_params.n_layers=24 
-            #pretrain_params.n_heads=16
-            #pretrain_params.dim_feedforward=2048
+            """
+            pretrain_params.emb_dim=64*16
+            pretrain_params.n_layers=24 
+            pretrain_params.n_heads=16
+            pretrain_params.dim_feedforward=2048
+            if getattr(pretrain_params, 'tim_layers_pos', '') :
+                pretrain_params.tim_layers_pos="" # TODO
+                pretrain_params.d_k = pretrain_params.emb_dim
+                pretrain_params.d_v = pretrain_params.emb_dim
+                pretrain_params.n_s = 2
+            #"""
             try :
                 model = TransformerModel(pretrain_params, dico, is_encoder=True, with_output=True).to(params.device)
             except AttributeError :
@@ -490,6 +497,11 @@ class XLMBertClassifier(nn.Module):
             for param in self.parameters():
                 l2_reg += torch.norm(param)
             return scores, loss + l2_lambda * l2_reg
+
+    def predict(self, tensor, y, weights):
+        """
+        """
+        return self.pred_layer(tensor[0] if not self.whole_output else tensor, y, weights=weights)
 
     def get_optimizers(self, params) :
         optimizer_p = get_optimizer(self.pred_layer.parameters(), params.optimizer_p)

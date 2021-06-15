@@ -9,6 +9,7 @@ import torch
 import torch.nn.functional as F
 
 import os
+import copy
 from sklearn.metrics import classification_report
 
 from .metrics import get_stats, get_collect, get_score, get_acc, f1_score_func, iou_func,  mcc_func
@@ -68,8 +69,23 @@ def load_dataset(params, logger, model) :
     else :
         train_dataset = None
     
-    logger.info("")
-    val_dataset = BiasClassificationDataset(params.val_data_file, "valid", params, model, logger, params.valid_n_samples)
+    if params.val_data_file == "" :
+        if params.cross_validation != "" and not params.eval_only :
+            """
+            try :
+                val_dataset = copy.deepcopy(train_dataset)
+            except RuntimeError: #Only Tensors created explicitly by the user (graph leaves) support the deepcopy protocol at the moment
+                n = 1
+                val_dataset = BiasClassificationDataset(params.train_data_file, "valid", params, model, logger, n_samples = n)
+            #"""
+            n = 1
+            val_dataset = BiasClassificationDataset(params.train_data_file, "valid", params, model, logger, n_samples = n)
+            val_dataset.reset(data = [])
+        else :
+            raise RuntimeError('validation data file path is empty')
+    else :
+        logger.info("")
+        val_dataset = BiasClassificationDataset(params.val_data_file, "valid", params, model, logger, params.valid_n_samples)
 
     logger.info("")
     logger.info("============ Data summary")
@@ -80,13 +96,14 @@ def load_dataset(params, logger, model) :
     
     return train_dataset, val_dataset
 
-def get_loss(model, batch, params, weights): 
+def get_loss(model, batch, params, weights, logits = None, loss = None): 
     (x, lengths, langs), y1, y2 = batch
     
-    if params.version in [1, 2, 3, 4] :    
-        y = y2 if params.version == 3 else y1
-        langs = langs.to(params.device) if params.n_langs > 1 else None
-        logits, loss = model(x.to(params.device), lengths.to(params.device), y=y.to(params.device), langs=langs, weights = weights)
+    if params.version in [1, 2, 3, 4] : 
+        if logits is None :   
+            y = y2 if params.version == 3 else y1
+            langs = langs.to(params.device) if params.n_langs > 1 else None
+            logits, loss = model(x.to(params.device), lengths.to(params.device), y=y.to(params.device), langs=langs, weights = weights)
         #logits = F.softmax(logits, dim = -1)
         
         stats = {}

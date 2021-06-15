@@ -414,7 +414,9 @@ config_dic = {
     "optimizer_e":[str, "adam,lr=0.0001"],
     "optimizer_p":[str, "adam,lr=0.0001"],
     "simple_model":[str, ""],
-    "pretrain_config":[str, ""]
+    "pretrain_config":[str, ""],
+    "pretrain_type":[int, 0],
+    "cross_validation":[str, ""]
 }
 
 def from_config_file(params, config_file = None):

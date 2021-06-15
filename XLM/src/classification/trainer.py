@@ -12,8 +12,11 @@ from torch.nn.utils import clip_grad_norm_
 
 import numpy as np
 import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.model_selection import KFold, StratifiedKFold, RepeatedKFold, RepeatedStratifiedKFold, LeaveOneOut, LeavePOut, ShuffleSplit, StratifiedShuffleSplit
 import os
 from tqdm import tqdm
+import re
 import itertools
 import gc
 import time
@@ -27,13 +30,122 @@ import json
 #############
 
 from .utils import path_leaf
+from ..utils import to_cuda
 from .. import one_step, end_of_epoch as pretrainer_eoe
 
 logger = getLogger()
 
-#possib = ["%s_%s_%s"%(i, j, k) for i, j, k in itertools.product(["train", "val"], ["mlm", "nsp"], ["ppl", "acc", "loss"])]
-possib = []
-tmp_type = lambda name : "ppl" in name or "loss" in name
+def cross_validatation(X, y = None, shuffle : bool = False, random_state = None, kwargs = {}) :
+    """https://scikit-learn.org/stable/modules/cross_validation.html"""
+    p = kwargs["p"]
+    cv_type = kwargs.get("cv_type", "k-fold")
+    l = len(X)
+    if type(p) == int :
+        assert 1 <= p <= l, "p = %s, p/l = %s"%(p, p/l)
+        n_splits = p
+        p = p/l
+    else : # float
+        assert 0 < p < 1, "p = %s"%(p)
+        n_splits = min(int(round(1/p)), l) 
+        n_splits = l - n_splits if p > 0.5 else n_splits
+
+    if cv_type == "k-fold" :
+        if y is None :
+            cv = KFold(n_splits=n_splits, shuffle = shuffle, random_state = random_state).split(X, y=y)
+        else :
+            try :
+                next(StratifiedKFold(n_splits=n_splits, shuffle = shuffle, random_state = random_state).split(X, y=y))
+            except ValueError: #n_splits=? cannot be greater than the number of members in each class.
+                cv = KFold(n_splits=n_splits, shuffle = shuffle, random_state = random_state).split(X, y)
+            else :
+                cv = StratifiedKFold(n_splits=n_splits, shuffle = shuffle, random_state = random_state).split(X, y=y)
+    elif cv_type == "repeated-k-fold":
+        if y is None :
+            cv = RepeatedKFold(n_splits=n_splits, n_repeats=kwargs.get("n_repeats", 1), random_state=random_state).split(X, y=y)
+        else :
+            try :
+                next(RepeatedStratifiedKFold(n_splits=n_splits, n_repeats=kwargs.get("n_repeats", 1), random_state = random_state).split(X, y=y))
+            except ValueError: #n_splits=? cannot be greater than the number of members in each class.
+                cv = RepeatedKFold(n_splits=n_splits, n_repeats=kwargs.get("n_repeats", 1), random_state=random_state).split(X, y=y)
+            else :
+                cv = RepeatedStratifiedKFold(n_splits=n_splits, n_repeats=kwargs.get("n_repeats", 1), random_state = random_state).split(X, y=y)  
+    elif cv_type == "leave-one-out" :
+        cv = LeaveOneOut().split(X, y=y)
+    elif cv_type == "leave-p-out" :
+        cv = LeavePOut(p=kwargs.get("p", 1)).split(X, y=y)
+    elif cv_type == "shuffle-split" :
+        if y is None :
+            cv = ShuffleSplit(n_splits=n_splits, test_size=kwargs.get("test_size", 0.2), random_state=random_state).split(X, y=y)
+        else :
+            try :
+                next(StratifiedShuffleSplit(n_splits=n_splits, test_size=kwargs.get("test_size", 0.2), random_state=random_state).split(X, y=y))
+            except ValueError: #n_splits=? cannot be greater than the number of members in each class.
+                cv = ShuffleSplit(n_splits=n_splits, test_size=kwargs.get("test_size", 0.2), random_state=random_state).split(X, y=y)
+            else :
+                cv = StratifiedShuffleSplit(n_splits=n_splits, test_size=kwargs.get("test_size", 0.2), random_state=random_state).split(X, y=y)
+
+    # TODO : GroupKFold, LeaveOneGroupOut, LeavePGroupsOut, GroupShuffleSplit
+    else :
+        raise NotImplementedError("cv_type = %s is not implemented"%cv_type)
+
+    for train_index, test_index in cv :
+        if p > 0.5 :
+            yield test_index, train_index
+            #yield X[test_index], X[train_index]
+        else :
+            yield train_index, test_index
+            #yield X[train_index], X[test_index]
+
+def to_type(p : str):
+  if "." in p :
+      return float(p)
+  else :
+      return int(p)
+      
+def get_cv_kwargs(cv_type : str, data : None) -> dict:
+    int_ = "([1-9]\d*)"
+    _prob = "0.([1-9]\d*|0*[1-9]\d*)"
+    int_or_prob="(%s|%s)"%(int_, _prob)
+    if re.match(pattern="^holdout:test_size=%s$"%int_or_prob, string=cv_type): # holdout
+        test_size = to_type(cv_type.split("=")[1])
+        if type(test_size) == int :
+            assert data is not None
+            l = len(data)
+            assert test_size <= l, "test_size > len(data)"
+            test_size = test_size/l
+
+        return {"cv_type": "holdout", "test_size": test_size}
+    elif cv_type=="leave-one-out" or re.match(pattern="^leave-one-out:p=%s$"%int_or_prob, string=cv_type) : # leave-one-out
+        return {"cv_type":"leave-one-out", "p": 0.1 if cv_type=="leave-one-out" else  to_type(cv_type.split("=")[1]) }
+    elif re.match(pattern="^%s-fold$"%int_or_prob, string=cv_type) : # k-fold
+        p = to_type(cv_type.split("-")[0])
+        return {"cv_type":"k-fold", "p": p}
+    elif re.match(pattern="^repeated-%s-fold:n_repeats=([1-9]\d*)$"%int_or_prob, string=cv_type) : # repeated-k-fold
+        p = to_type(cv_type.split("-")[1])
+        n_repeats = int(cv_type.split("=")[1])
+        return {"cv_type":"repeated-k-fold", "p": p, "n_repeats": n_repeats}
+    elif re.match(pattern="^leave-%s-out$"%int_or_prob, string=cv_type) : # leave-p-out
+        p=to_type(cv_type.split("-")[1])
+        if type(p) == float :
+            p = round(p*len(data))
+        if data is not None :
+            assert p <= len(data) 
+        if p == 1 :
+             return {"cv_type":"leave-one-out", "p": p}
+        else :
+            return {"cv_type":"leave-p-out", "p": p}
+    elif re.match(pattern="^shuffle-split:p=%s,test_size=%s$"%(int_or_prob, int_or_prob), string=cv_type) : # shuffle-split
+        tmp = cv_type.split("=")
+        p=to_type(tmp[1].split(',')[0])
+        test_size=to_type(tmp[-1])
+        if type(test_size) == int :
+            assert data is not None
+            l = len(data)
+            assert test_size <= l, "test_size > len(data)"
+            test_size = test_size/l
+        return {"cv_type":"shuffle-split", "p": p, "test_size": test_size}
+    else :
+        raise NotImplementedError("cv_type = %s is not implemented"%cv_type)
 
 class Trainer(object):
     """Training Helper Class"""
@@ -58,13 +170,15 @@ class Trainer(object):
         assert self.epoch_size > 0 or params.eval_only
         
         # add metrics and topK to possible metrics
-        global possib
+        possib = []
+        #possib = ["%s_%s_%s"%(i, j, k) for i, j, k in itertools.product(["train", "val"], ["mlm", "nsp"], ["ppl", "acc", "loss"])]
         possib.extend(["%s_%s"%(i, j) for i, j in itertools.product(["train", "val"], ["f1_score_weighted", "acc", "loss", "IoU_weighted", "MCC"])])
         tmp = []
         for k in range(1, params.n_labels+1):
             tmp.extend(["%s_%s"%(i, j) for i, j in itertools.product(["top%d"%k], possib)])
         possib.extend(tmp)
 
+        tmp_type = lambda name : "ppl" in name or "loss" in name
         # validation metrics
         self.metrics = []
         metrics = [m for m in self.params.validation_metrics.split(',') if m != '']
@@ -227,8 +341,9 @@ class Trainer(object):
             except TypeError: #must be real number, not dict
                 self.logger.info("%s -> %s" % (key, value))
                 
-        #if self.params.is_master:
-        #    self.logger.info("__log__:%s" % json.dumps(scores))
+        if self.params.is_master and self.pre_trainer is None :
+            #self.logger.info("__log__:%s" % json.dumps(scores))
+            pass
 
     def save_best_model(self, scores):
         """
@@ -491,10 +606,33 @@ class Trainer(object):
         total_stats = []
 
         for i, batch in enumerate(self.train_data_iter):
-
-            # forward / loss
-            loss, stats = get_loss(self.model, batch, self.params, self.train_data_iter.weights)
-            #loss = loss.mean() # mean() for Data Parallelism
+            if self.test :
+                (x, lengths, langs), y1, y2 = batch
+                positions = None
+                langs = None # langs.to(self.params.device) if self.params.n_langs > 1 else None
+                x, lengths, positions, langs, _ = self.pre_trainer.round_batch(x, lengths, positions, langs)
+                x, y, pred_mask = self.pre_trainer.mask_out(x, lengths)
+                # cuda
+                x, y, pred_mask, lengths, positions, langs = to_cuda(x, y, pred_mask, lengths, positions, langs)
+                # forward / loss
+                tensor = self.pre_trainer.model('fwd', x=x, lengths=lengths, positions=positions, langs=langs, causal=False)
+                _, mlm_loss = self.pre_trainer.model('predict', tensor=tensor, pred_mask=pred_mask, y=y, get_scores=False)
+                mlm_loss  = float(self.params.lambda_mlm) * mlm_loss 
+                lang1 = "en"
+                lang2 = None
+                self.pre_trainer.stats[('MLM-%s' % lang1) if lang2 is None else ('MLM-%s-%s' % (lang1, lang2))].append(mlm_loss.item())
+                
+                y = y2 if self.params.version == 3 else y1
+                logits, classif_loss = self.model.predict(tensor, y, weights = self.train_data_iter.weights)
+                loss, stats = get_loss(self.model, batch, self.params, self.train_data_iter.weights)
+                
+                _, stats = get_loss(None, batch, self.params, None, logits = logits, loss = classif_loss)
+                
+                loss = mlm_loss  + classif_loss
+            else :
+                # forward / loss
+                loss, stats = get_loss(self.model, batch, self.params, self.train_data_iter.weights)
+                #loss = loss.mean() # mean() for Data Parallelism
             
             # optimize
             self.optimize(loss)
@@ -528,13 +666,101 @@ class Trainer(object):
                 total_stats.append(stats)
         return total_stats
     
+    def generate(self):
+        if getattr("self", "data_generator", None) is None :
+            self.data_generator = cross_validatation(X=self.data, y = self.labels, shuffle = self.shuffle, 
+                                                    random_state = self.random_state, kwargs = self.kwargs)
+        try :
+            train_index, val_index = next(self.data_generator)
+        except StopIteration :
+            self.data_generator = cross_validatation(X=self.data, y = self.labels, shuffle = self.shuffle, 
+                                                    random_state = self.random_state, kwargs = self.kwargs) 
+            train_index, val_index = next(self.data_generator)
+            
+        #self.train_data_iter.data = [self.data[i] for i in train_index]
+        #self.val_data_iter.data = [self.data[i] for i in val_index]
+        self.train_data_iter.reset(data = [self.data[i] for i in train_index])
+        self.val_data_iter.reset(data = [self.data[i] for i in val_index])
+    
+    def data_summary(self) :
+        logger.info("")
+        logger.info("============ Data summary")
+        if self.params.in_memory :
+            l1, l2 = len(self.train_data_iter.data), len(self.val_data_iter.data) 
+            logger.info("train : %d (x batch_size : %d)"%(l1, l1*self.params.batch_size))
+            logger.info("valid : %d (x batch_size : %d)"%(l2, l2*self.params.batch_size))
+        else :
+            logger.info("train : %d"%len(self.train_data_iter.data))
+            logger.info("valid : %d"%len(self.val_data_iter.data))
+            
+        logger.info("")
+            
     def train(self, get_loss, end_of_epoch):
         """ Train Loop """
+        
+        data = self.train_data_iter.data + self.val_data_iter.data
+        if self.params.cross_validation == "" :
+            self.cross_validation = False
+        else :
+            self.cross_validation = True
+            self.kwargs = get_cv_kwargs(cv_type = self.params.cross_validation, data = data)
+
+        self.random_state = self.params.random_seed
+        self.shuffle = self.params.shuffle
+        
+        self.labels = None
+        if not self.params.in_memory :
+            self.labels = []
+            for _, y1, y2 in data :
+                y = y2 if self.params.version == 3 else y1
+                try :
+                    y.item()
+                    scalar = True
+                except ValueError: #only one element tensors can be converted to Python scalars
+                    scalar = False
+                break
+                    
+            for _, y1, y2 in data :
+                y = y2 if self.params.version == 3 else y1
+                y = y if scalar else torch.argmax(y)
+                self.labels.append(y.item())   
+                
+        if self.cross_validation :
+            if self.kwargs["cv_type"] == "holdout" :
+                self.cross_validation = False
+                try :
+                    train_data, val_data = train_test_split(
+                        data, 
+                        test_size = self.kwargs["test_size"], 
+                        random_state = self.random_state,
+                        shuffle = self.shuffle,
+                        stratify = self.labels
+                    )
+                except ValueError: #The least populated class in y has only 1 member, which is too few. The minimum number of groups for any class cannot be less than 2.
+                    train_data, val_data = train_test_split(
+                        data, 
+                        test_size = self.kwargs["test_size"], 
+                        random_state = self.random_state,
+                        shuffle = self.shuffle,
+                        stratify = None
+                    )
+                self.train_data_iter.reset(data = train_data)
+                self.val_data_iter.reset(data = val_data)
+            else :
+                self.data = data
+                
+        self.data_summary()
+
+        self.test = not self.params.pretrain_type == 0 and self.pre_trainer is not None
         
         for _ in range(self.params.max_epoch):
             
             self.logger.info("============ Starting epoch %i ... ============" % self.epoch)
             self.n_sentences = 0
+            
+            if self.cross_validation :
+                self.generate() 
+                self.data_summary()
             
             if self.pre_trainer is not None :
                 self.pre_trainer.n_sentences = 0
@@ -544,7 +770,7 @@ class Trainer(object):
                 if "avg" in k :
                     self.stats[k] = []
             
-            if self.params.pretrain :
+            if self.params.pretrain and not self.test :
                 train_stats = self.one_epoch(get_loss)
             else :
                 train_stats = self.train_step(get_loss)
@@ -572,6 +798,8 @@ class Trainer(object):
             self.save_best_model(s)
             self.save_periodic()
             self.end_epoch(s)
+            
+            self.logger.info("============ garbage collector collecting %d ..." % gc.collect())
             
         plot_all_scores(self.all_scores)
         

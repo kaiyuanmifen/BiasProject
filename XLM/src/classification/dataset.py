@@ -243,6 +243,7 @@ class BiasClassificationDataset(Dataset):
             weights = torch.FloatTensor([1.0 / w for w in weights])
             weights = weights / weights.sum()
             self.weights = weights.to(self.params.device)
+            logger.info("Normalized weigths %s"%str(self.weights.tolist()))
         else :
             self.weights = None
 
@@ -259,16 +260,64 @@ class BiasClassificationDataset(Dataset):
                 tmp.append(tuple([self.to_tensor(inst[0])] + [torch.stack(y) for y in inst[1:]]))
             self.data = tmp
         else :
-            self.data = data
+            self.test = True
+            if self.test :
+                self.data = data
+            else :
+                for i in range(len(data)) :
+                    data[i][0] = self.to_tensor(sentences[i]) 
+                self.data = data
         
         # For large data, it is necessary to process them only once
         logger.info("Saving data to %s ..."%data_path)
         torch.save(self, data_path)
         if split == "train" :
             torch.save(data_info, params.data_info_path)
+    
+    def reset(self, data) :
+        self.data = data
+        self.n_samples = len(data) * (self.batch_size if self.in_memory else 1)
+        self.batch_size = self.n_samples if self.params.batch_size > self.n_samples else self.params.batch_size
+
+    def __len__(self):
+        if self.in_memory :
+            return self.n_samples // self.batch_size
+        else :
+            return self.n_samples
+
+    def __getitem__(self, index):
+        if not self.in_memory :
+            inst = self.data[index]
+            if self.test :
+                return tuple([self.to_tensor(inst[0])] + [torch.stack(y) for y in inst[1:]])
+            else :
+                return tuple([inst[0]] + [torch.stack(y) for y in inst[1:]])
+        else :
+            return self.data[index]
         
+    def __iter__(self): # iterator to load data
+        if self.shuffle :
+            random.shuffle(self.data)
+        if not self.in_memory :
+            i = 0
+            while self.n_samples > i :
+                i += self.batch_size
+                inst = list(zip(*self.data[i-self.batch_size:i]))
+                if self.test :
+                    try :
+                        yield tuple([self.to_tensor(inst[0])] + [torch.stack(y) for y in inst[1:]])
+                    except IndexError : # list index out of range
+                        pass
+                else :
+                    inst1 = list(zip(*inst[0]))
+                    yield tuple([(torch.stack(x) for x in inst1)] + [torch.stack(y) for y in inst[1:]])
+
+        else :
+            for batch in self.data :
+                yield batch
+                
     def get_instances(self, df):
-        columns = list(df.columns[1:]) # excapt "'Unnamed: 0'"
+        #columns = list(df.columns[1:]) # excapt "'Unnamed: 0'"
         rows = df.iterrows()
         if self.shuffle :
             if self.n_samples or (not self.group_by_size and not self.n_samples) :
@@ -334,32 +383,6 @@ class BiasClassificationDataset(Dataset):
                 yield [text, torch.tensor(label, dtype=torch.float), torch.tensor(label, dtype=torch.long)]
             
         self.weights = weights
-
-    def __len__(self):
-        if self.in_memory :
-            return self.n_samples // self.batch_size
-        else :
-            return self.n_samples
-
-    def __getitem__(self, index):
-        if not self.in_memory :
-            inst = self.data[index]
-            return tuple([self.to_tensor(inst[0])] + [torch.stack(y) for y in inst[1:]])
-        else :
-            return self.data[index]
-        
-    def __iter__(self): # iterator to load data
-        if self.shuffle :
-            random.shuffle(self.data)
-        if not self.in_memory :
-            i = 0
-            while self.n_samples > i :
-                i += self.batch_size
-                inst = list(zip(*self.data[i-self.batch_size:i]))
-                return tuple([self.to_tensor(inst[0])] + [torch.stack(y) for y in inst[1:]])
-        else :
-            for batch in self.data :
-                yield batch
 
     def downsampling(self, data):
         tmp = []

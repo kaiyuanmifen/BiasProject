@@ -6,6 +6,8 @@
 #
 
 import os
+
+from torch._C import default_generator
 from ..utils import bool_flag
 def __main__(params) :
     params.use_pretrained_word_embedding = False
@@ -132,6 +134,37 @@ def add_argument(parser) :
                         model_name:CNN,emb_dim:100,use_pretrained_word_embedding:,train_embedding:True,tokenize:spacy,hidden_dim:256,n_filters:100,filter_sizes:3-4-5")
     
     parser.add_argument("--pretrain_config", type=str, default="", help="TODO")
+    parser.add_argument('--pretrain_type', default=0, const=0, nargs='?',
+                        choices=[0, 1], 
+                        help=  "0 : MLM step + Classif step \
+                                1 : MLM loss + Classif loss")
+    import re
+    import argparse
+    def cv(arg_value):
+        if arg_value == "" :
+            return arg_value
+
+        int_ = "([1-9]\d*)"
+        _prob = "0.([1-9]\d*|0*[1-9]\d*)"
+        int_or_prob="(%s|%s)"%(int_, _prob)
+        if re.match(pattern="^holdout:test_size=%s$"%int_or_prob, string=arg_value): # holdout
+            return arg_value
+        elif arg_value=="leave-one-out" or re.match(pattern="^leave-one-out:p=%s$"%int_or_prob, string=arg_value) : # leave-one-out
+            return arg_value
+        elif re.match(pattern="^%s-fold$"%int_or_prob, string=arg_value):  # k-fold
+            return arg_value     
+        elif re.match(pattern="^repeated-%s-fold:n_repeats=([1-9]\d*)$"%int_or_prob, string=arg_value):  # repeated-k-fold:n_repeats=...
+            return arg_value  
+        elif re.match(pattern="^leave-%s-out$"%int_or_prob, string=arg_value):  # leave-p-out
+            return arg_value   
+        elif re.match(pattern="^shuffle-split:p=%s,test_size=%s$"%(int_or_prob, int_or_prob), string=arg_value):  # shuffle-split:test_size=0....
+            return arg_value
+        else :
+            raise argparse.ArgumentTypeError
+
+    parser.add_argument('--cross_validation', type=cv, default="", 
+                        help=", holdout:test_size=0.2, leave-one-out, leave-one-out:p=0.2, 0.2-fold, 1000-fold, repeated-0.2-fold:n_repeats=2, \
+                            leave-0.2-out, leave-1000-out, shuffle-split:p=0.2,test_size=0.2")
     return parser
 
 def check_parameters(params) :
