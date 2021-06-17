@@ -48,6 +48,8 @@ def cross_validatation(X, y = None, shuffle : bool = False, random_state = None,
         assert 0 < p < 1, "p = %s"%(p)
         n_splits = min(int(round(1/p)), l) 
         n_splits = l - n_splits if p > 0.5 else n_splits
+    
+    logger.info("cv_type = %s, n_splits = %s, p = %s"%(cv_type, n_splits, p))
 
     if cv_type == "k-fold" :
         if y is None :
@@ -557,7 +559,7 @@ class Trainer(object):
 
     def classif_step(self, get_loss, batch, total_stats, i) :
         # forward / loss
-        loss, stats = get_loss(self.model, batch, self.params, self.train_data_iter.weights)
+        loss, stats = get_loss(self.model, batch, self.params, self.train_data_iter.weights, mode="train", epoch = self.epoch)
         #loss = loss.mean() # mean() for Data Parallelism
         
         # optimize
@@ -611,27 +613,41 @@ class Trainer(object):
                 positions = None
                 langs = None # langs.to(self.params.device) if self.params.n_langs > 1 else None
                 x, lengths, positions, langs, _ = self.pre_trainer.round_batch(x, lengths, positions, langs)
-                x, y, pred_mask = self.pre_trainer.mask_out(x, lengths)
-                # cuda
-                x, y, pred_mask, lengths, positions, langs = to_cuda(x, y, pred_mask, lengths, positions, langs)
-                # forward / loss
-                tensor = self.pre_trainer.model('fwd', x=x, lengths=lengths, positions=positions, langs=langs, causal=False)
-                _, mlm_loss = self.pre_trainer.model('predict', tensor=tensor, pred_mask=pred_mask, y=y, get_scores=False)
-                mlm_loss  = float(self.params.lambda_mlm) * mlm_loss 
-                lang1 = "en"
-                lang2 = None
-                self.pre_trainer.stats[('MLM-%s' % lang1) if lang2 is None else ('MLM-%s-%s' % (lang1, lang2))].append(mlm_loss.item())
+                try :
+                    x, y, pred_mask = self.pre_trainer.mask_out(x, lengths)
+                    # cuda
+                    x, y, pred_mask, lengths, positions, langs = to_cuda(x, y, pred_mask, lengths, positions, langs)
+                    # forward / loss
+                    tensor = self.pre_trainer.model('fwd', x=x, lengths=lengths, positions=positions, langs=langs, causal=False)
+                    _, mlm_loss = self.pre_trainer.model('predict', tensor=tensor, pred_mask=pred_mask, y=y, get_scores=False)
+                    mlm_loss  = float(self.params.lambda_mlm) * mlm_loss 
+                    lang1 = "en"
+                    lang2 = None
+                    self.pre_trainer.stats[('MLM-%s' % lang1) if lang2 is None else ('MLM-%s-%s' % (lang1, lang2))].append(mlm_loss.item())
+                    self.stats["mlm_loss"] = mlm_loss.item()
+                except RuntimeError: #cannot sample n_sample <= 0 samples
+                    # cuda
+                    x, lengths, positions, langs = to_cuda(x, lengths, positions, langs)
+                    # forward / loss
+                    tensor = self.pre_trainer.model('fwd', x=x, lengths=lengths, positions=positions, langs=langs, causal=False)
+                    mlm_loss = 0
                 
                 y = y2 if self.params.version == 3 else y1
-                logits, classif_loss = self.model.predict(tensor, y, weights = self.train_data_iter.weights)
-                loss, stats = get_loss(self.model, batch, self.params, self.train_data_iter.weights)
+                if self.params.outliers > 0 :
+                    torch.manual_seed(self.epoch)
+                    x = torch.where(torch.rand(x.size()) > self.params.outliers, x, torch.empty_like(x).random_(self.params.n_words))
+                    y = torch.where(torch.rand(y.size()) > self.params.outliers, y, torch.empty_like(y).random_(self.params.n_labels))
+                    torch.manual_seed(self.params.random_seed)
+
+                logits, classif_loss = self.model.predict(tensor, y.to(self.params.device), weights = self.train_data_iter.weights)
+                loss, stats = get_loss(self.model, batch, self.params, self.train_data_iter.weights, mode="train", epoch = self.epoch)
                 
-                _, stats = get_loss(None, batch, self.params, None, logits = logits, loss = classif_loss)
+                _, stats = get_loss(None, batch, self.params, None, logits = logits, loss = classif_loss, mode="train", epoch = self.epoch)
                 
                 loss = mlm_loss  + classif_loss
             else :
                 # forward / loss
-                loss, stats = get_loss(self.model, batch, self.params, self.train_data_iter.weights)
+                loss, stats = get_loss(self.model, batch, self.params, self.train_data_iter.weights, mode="train", epoch = self.epoch)
                 #loss = loss.mean() # mean() for Data Parallelism
             
             # optimize
@@ -662,23 +678,23 @@ class Trainer(object):
         total_stats = []
         with torch.no_grad(): 
             for batch in tqdm(self.val_data_iter, desc='val'):
-                _, stats = get_loss(self.model, batch, self.params, self.val_data_iter.weights) 
+                _, stats = get_loss(self.model, batch, self.params, self.val_data_iter.weights, mode="eval", epoch = self.epoch) 
                 total_stats.append(stats)
         return total_stats
     
     def generate(self):
-        if getattr("self", "data_generator", None) is None :
+        if getattr(self, "data_generator", None) is None :
+            logger.info("Creating new data generator ...")
             self.data_generator = cross_validatation(X=self.data, y = self.labels, shuffle = self.shuffle, 
                                                     random_state = self.random_state, kwargs = self.kwargs)
         try :
             train_index, val_index = next(self.data_generator)
         except StopIteration :
+            logger.info("Creating new data generator ...")
             self.data_generator = cross_validatation(X=self.data, y = self.labels, shuffle = self.shuffle, 
                                                     random_state = self.random_state, kwargs = self.kwargs) 
             train_index, val_index = next(self.data_generator)
-            
-        #self.train_data_iter.data = [self.data[i] for i in train_index]
-        #self.val_data_iter.data = [self.data[i] for i in val_index]
+        
         self.train_data_iter.reset(data = [self.data[i] for i in train_index])
         self.val_data_iter.reset(data = [self.data[i] for i in val_index])
     

@@ -96,12 +96,16 @@ def load_dataset(params, logger, model) :
     
     return train_dataset, val_dataset
 
-def get_loss(model, batch, params, weights, logits = None, loss = None): 
+def get_loss(model, batch, params, weights, logits = None, loss = None, mode="train", epoch=0): 
     (x, lengths, langs), y1, y2 = batch
-    
     if params.version in [1, 2, 3, 4] : 
         if logits is None :   
             y = y2 if params.version == 3 else y1
+            if mode=="train" and params.outliers > 0 :
+                torch.manual_seed(epoch)
+                x = torch.where(torch.rand(x.size()) > params.outliers, x, torch.empty_like(x).random_(params.n_words))
+                y = torch.where(torch.rand(y.size()) > params.outliers, y, torch.empty_like(y).random_(params.n_labels))
+                torch.manual_seed(params.random_seed)
             langs = langs.to(params.device) if params.n_langs > 1 else None
             logits, loss = model(x.to(params.device), lengths.to(params.device), y=y.to(params.device), langs=langs, weights = weights)
         #logits = F.softmax(logits, dim = -1)
@@ -132,7 +136,11 @@ def get_loss(model, batch, params, weights, logits = None, loss = None):
             #stats["p_c"] = y1.detach().cpu()#.numpy()
     
     elif params.version in [5, 6, 7] :
-        
+        if mode=="train" and params.outliers > 0 :
+            torch.manual_seed(epoch)
+            x = torch.where(torch.rand(x.size()) > params.outliers, x, torch.empty_like(x).random_(params.n_words))
+            y1 = torch.where(torch.rand(y1.size()) > params.outliers, y1, torch.empty_like(y1).random_(params.n_labels))
+            torch.manual_seed(params.random_seed)
         langs = langs.to(params.device) if params.n_langs > 1 else None
         if params.version == 6 :
             scores, loss, scores1 = model(x.to(params.device), lengths.to(params.device), y=y1.to(params.device), langs=langs, weights = weights)

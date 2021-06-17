@@ -165,6 +165,9 @@ def add_argument(parser) :
     parser.add_argument('--cross_validation', type=cv, default="", 
                         help=", holdout:test_size=0.2, leave-one-out, leave-one-out:p=0.2, 0.2-fold, 1000-fold, repeated-0.2-fold:n_repeats=2, \
                             leave-0.2-out, leave-1000-out, shuffle-split:p=0.2,test_size=0.2")
+
+    parser.add_argument('--outliers', type=float, default=0, help="")
+
     return parser
 
 def check_parameters(params) :
@@ -182,3 +185,5 @@ def check_parameters(params) :
             params.model_name = "XLM"
     else :
         params.model_name = "google_bert"
+
+    assert 0 <= params.outliers < 1

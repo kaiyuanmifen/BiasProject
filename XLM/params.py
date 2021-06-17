@@ -416,7 +416,8 @@ config_dic = {
     "simple_model":[str, ""],
     "pretrain_config":[str, ""],
     "pretrain_type":[int, 0],
-    "cross_validation":[str, ""]
+    "cross_validation":[str, ""],
+    "outliers":[float, 0]
 }
 
 def from_config_file(params, config_file = None):

@@ -50,6 +50,7 @@
     "pretrain_config":"",
     "pretrain_type" : "0",
     "cross_validation":"",
+    "outliers":"0",
 
     "save_periodic":"0", 
     "fp16":"False",

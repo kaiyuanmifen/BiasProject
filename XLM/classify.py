@@ -78,7 +78,6 @@ if __name__ == '__main__':
         params.device = torch.device(params.device)
     
     set_seeds(params.random_seed)
-    
     params.pretrain = os.path.isfile(params.pretrain_config)
     if params.pretrain :
         params_pretrain = from_config_file(copy.deepcopy(params), config_file = params.pretrain_config)
