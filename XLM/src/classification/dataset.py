@@ -27,7 +27,12 @@ def not_exclude(x, special_tokens, do_upper = False):
     return x and "%s\n"%x not in special_tokens and '<%s>\n'%(x.upper() if do_upper else x) not in special_tokens
 
 def split_sentence(sentence, special_tokens, do_lower = False):
-    return (x.lower() if do_lower else x for x in re.split(r'\W+', sentence.strip()) if not_exclude(x, special_tokens, do_lower))
+    wl = True
+    if wl :
+        t = re.split(r'\W+', sentence.strip())
+    else :
+        t = re.split(r'', sentence.strip())
+    return (x.lower() if do_lower else x for x in t if not_exclude(x, special_tokens, do_lower))
 
 def generate_vocabulary(train_captions, special_tokens, min_freq = 0, do_lower = False):
     """
@@ -79,6 +84,31 @@ def get_dico(corpus, special_tokens=[], min_freq=0, max_vocab = None, logger = N
             print("Skipped %i words!" % skipped)
     return dico
     
+def remove_extreme_label(label, v = 1) :
+    if v == 1 :
+        if label == 0 or label == 5:
+            label = None
+        else :
+            label = label - 1
+    if v == 2 :
+        if label == 0 :
+            label = 1
+        elif label == 5 :
+            label = 4
+        label = label - 1
+
+    return label
+
+def filter(b, c, v=None) :
+    if v is None :
+        return b, c
+    assert v in [1, 2]
+    b = [remove_extreme_label(l, v) for l in b]
+    if v==1 :
+        c = [x for i, x in enumerate(c) if b[i] is not None]
+        b = [x for x in b if x is not None]
+    return b, c
+
 class BiasClassificationDataset(Dataset):
     """ Dataset class for Bias Classification"""
     def __init__(self, file, split, params, model, logger, n_samples = None, min_len=1):
@@ -226,6 +256,7 @@ class BiasClassificationDataset(Dataset):
         
         if split == "train" :
             if self.do_augment  :
+                # TODO : raise this hard code to the parameter level
                 p = 0.3
                 max_change = 5
                 logger.info("EDA text augmentation : p = %s, max_change = %s..."%(p, max_change))
@@ -276,7 +307,10 @@ class BiasClassificationDataset(Dataset):
     
     def reset(self, data) :
         self.data = data
-        self.n_samples = len(data) * (self.batch_size if self.in_memory else 1)
+        if self.batch_size == self.n_samples :
+            self.n_samples = len(data)
+        else :
+            self.n_samples = len(data) * (self.batch_size if self.in_memory else 1)
         self.batch_size = self.n_samples if self.params.batch_size > self.n_samples else self.params.batch_size
 
     def __len__(self):
@@ -335,16 +369,18 @@ class BiasClassificationDataset(Dataset):
             text = row[self.text_column]
             b = [row[col] for col in self.scores_columns]
             c = [row[col] for col in self.confidence_columns] if self.confidence_columns else [1] # Give a score of 1 to the label
-        
+            b, c = filter(b, c, v = None)
             s = sum(c)
+            weight_out = torch.tensor(s / 30, dtype=torch.float)
             s = 1 if s == 0 else s
+            #b = [i+1 for i in b]
             if self.version == 1 :
                 #  label the average of the scores with the confidence scores as weighting
                 label = int(round(sum([ score * conf for score, conf in  zip(b, c) ]) / s))
                 weights[label] = weights[label] + 1 
                 label = torch.tensor(label, dtype=torch.long)
-                yield [text, label, label]
-                
+                yield [text, label, label, weight_out]
+            
             elif self.version in [2, 3, 4] : 
                 p_c = [0]*self.params.n_labels
                 for (b_i, c_i) in zip(b, c) :
@@ -358,7 +394,7 @@ class BiasClassificationDataset(Dataset):
                     label = b[np.argmax(a = c)] 
                     
                 weights[label] = weights[label] + 1
-                yield [text, torch.tensor(p_c, dtype=torch.float), torch.tensor(label, dtype=torch.long)]
+                yield [text, torch.tensor(p_c, dtype=torch.float), torch.tensor(label, dtype=torch.long), weight_out]
             
             elif self.version == 5 :
                 # bias regression
@@ -366,13 +402,13 @@ class BiasClassificationDataset(Dataset):
                 c = sum(c) / len(c)
                 label = int(b >= self.threshold) # 1 if b >= self.threshold else 0
                 weights[label] = weights[label] + 1
-                yield [text, torch.tensor([b, c], dtype=torch.float), torch.tensor(label, dtype=torch.long)]
+                yield [text, torch.tensor([b, c], dtype=torch.float), torch.tensor(label, dtype=torch.long), weight_out]
             
             elif self.version == 6:
                 # TODO
                 label = int(round(sum([ score * conf for score, conf in  zip(b, c) ]) / s))
                 weights[label] = weights[label] + 1
-                yield [text, torch.tensor([b, c], dtype=torch.long), torch.tensor(label, dtype=torch.long)]
+                yield [text, torch.tensor([b, c], dtype=torch.long), torch.tensor(label, dtype=torch.long), weight_out]
             
             elif self.version == 7 :
                 # TODO
@@ -380,7 +416,7 @@ class BiasClassificationDataset(Dataset):
                 label = sum([ score * conf for score, conf in  zip(b, c) ]) / s
                 label = int(label >= self.threshold) # 1 if label >= self.threshold else 0
                 weights[label] = weights[label] + 1
-                yield [text, torch.tensor(label, dtype=torch.float), torch.tensor(label, dtype=torch.long)]
+                yield [text, torch.tensor(label, dtype=torch.float), torch.tensor(label, dtype=torch.long), weight_out]
             
         self.weights = weights
 
@@ -410,7 +446,6 @@ class BiasClassificationDataset(Dataset):
         # mean or max
         #n_min = sum(self.weights) / len(self.weights)
         n_min = max(self.weights)
-            
         for c, _ in enumerate(self.weights) :
             data4c = [inst for inst in data if inst[-1].item() == c]
             i, m = 0, len(data4c)

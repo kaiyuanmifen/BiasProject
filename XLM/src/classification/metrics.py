@@ -218,15 +218,34 @@ class Metrics():
             
         return results
 
+def score_conf(f, eps = 1e-12) :
+  "f : (bs, n_class)"
+  M = f.size(1)
+  score_output = torch.sum(torch.arange(1, M+1) * f, dim=1) - 1 #/ M
+  confidence_output = 1 + torch.sum(f * torch.log(f+eps), dim=1) / np.log(M)
+  return score_output, confidence_output
+
 def get_stats(logits, y, params, inclure_pred=True, include_avg=True):
     stats = {}
 
-    label_pred = logits.max(1)[1].view(-1).detach().cpu().numpy()
+    if params.yoshua :
+        f = F.softmax(logits.detach().cpu(), dim=-1)
+        score_output, confidence_output = score_conf(f)
+        label_pred = score_output.round().int()
+    else :
+        label_pred = logits.max(1)[1].view(-1).detach().cpu().numpy()
+        confidence_output = F.softmax(logits.detach().cpu(), dim=-1).max(1)[0]
+    
+    a, b = 0, 10
+    confidence_output = (b-a) * confidence_output + a 
+    confidence_pred = confidence_output.round().int()
+
     label_id = y.view(-1).numpy()
     
     if inclure_pred :
         stats["label_pred"] = label_pred
         stats["label_id"] = label_id
+        stats["confidence_pred"] = confidence_pred
         
     for k in range(1, params.topK+1):
         k_acc, k_f1, iou, mcc, y_pred = top_k(logits = logits.detach().cpu(), y=y, k=k)

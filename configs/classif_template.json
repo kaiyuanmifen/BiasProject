@@ -44,6 +44,7 @@
     "bert_model_name":"bert-base-uncased",
     "finetune_layers":"",
     "weighted_training":"False",
+    "weighted_out":"False",
     "optimizer_e":"adam,lr=0.0001,weight_decay=0.01",
     "optimizer_p":"adam,lr=0.0001,weight_decay=0.01",
     "simple_model":"",
@@ -51,6 +52,7 @@
     "pretrain_type" : "0",
     "cross_validation":"",
     "outliers":"0",
+    "yoshua":"False",
 
     "save_periodic":"0", 
     "fp16":"False",
@@ -64,6 +66,6 @@
     "debug_slurm":"False",
     "local_rank":"-1",
     "master_port":"-1",
-    "asm_cutoffs":"8000,20000",
+    "asm_cutoffs":"2,3,4,5",
     "asm_div_value":"4"
 }

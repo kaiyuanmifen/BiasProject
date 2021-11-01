@@ -411,13 +411,15 @@ config_dic = {
     "bert_model_name":[str, "bert-base-uncased"],
     "finetune_layers":[str, ""],
     "weighted_training":[bool, False],
+    "weighted_out":[bool, False],
     "optimizer_e":[str, "adam,lr=0.0001"],
     "optimizer_p":[str, "adam,lr=0.0001"],
     "simple_model":[str, ""],
     "pretrain_config":[str, ""],
     "pretrain_type":[int, 0],
     "cross_validation":[str, ""],
-    "outliers":[float, 0]
+    "outliers":[float, 0],
+    "yoshua":[bool, False],
 }
 
 def from_config_file(params, config_file = None):

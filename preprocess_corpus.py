@@ -189,11 +189,18 @@ def write_corpus(corpus, file_path, version = 1, random_seed = 0) :
         else :
             f.writelines(corpus)
 
-def stat(corpus):
-    stat = [len(s.split(" ")) for s in corpus]
-    N = len(corpus)
+def get_stat(corpus = None, stat = None, log = True):
+    if stat is None :
+        assert corpus is not None
+        stat = [len(s.split(" ")) for s in corpus]
+        N = len(corpus)
+    else :
+        N = len(stat)
     mean_, max_, min_ = sum(stat)/N, max(stat), min(stat)
-    print("len : %d, mean : %d, min : %d, max :%d"%(N, mean_, min_, max_))
+    s="len : %d, mean : %d, min : %d, max :%d"%(N, mean_, min_, max_)
+    if not log :
+        return s
+    print(s)
 
 
 FALSY_STRINGS = {'off', 'false', '0'}
@@ -250,7 +257,7 @@ if __name__ == '__main__':
 
     corpus = corpus[:args.n_samples]
     print("stat corpus")
-    stat(corpus)
+    get_stat(corpus)
 
     for i in steps.keys() :
         if i == 1 :
@@ -261,7 +268,7 @@ if __name__ == '__main__':
             print("\n ================= corpus2")
             corpus = preprocess_corpus(corpus, max_len = args.max_len)
             print("stat corpus2")
-            stat(corpus)
+            get_stat(corpus)
             for v in steps[i] :
                 write_corpus(corpus, os.path.join(args.output_path, "%s%dv%d.%s"%(filename, i, v,'txt')), v, args.random_seed)
 
@@ -287,7 +294,7 @@ if __name__ == '__main__':
             print('remove : %d'%(len(corpus)-len(corpus3)))
             corpus = corpus3
             print("stat corpus3")
-            stat(corpus)
+            get_stat(corpus)
             for v in steps[i] :
                 write_corpus(corpus, os.path.join(args.output_path, "%s%dv%d.%s"%(filename, i, v,'txt')), v, args.random_seed)
 

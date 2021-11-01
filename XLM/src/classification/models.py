@@ -12,6 +12,7 @@ import torch.nn as nn
 import numpy as np
 import os
 import copy
+import re
 
 #from transformers import BertModel, BertTokenizer
 
@@ -79,6 +80,21 @@ class GRU(nn.Module):
         else:
             return x[-1,:,:]   
         
+class Bilinear(nn.Module):
+    def __init__(self, in_features, out_features, bias=True, device=None, dtype=None):
+        super().__init__()
+        self.proj = nn.Bilinear(
+            in1_features = in_features, 
+            in2_features = in_features, 
+            out_features = out_features, 
+            bias=bias, 
+            device=device, 
+            dtype=dtype
+        )
+    
+    def forward(self, x):
+        return self.proj(x, x)
+
 class PredLayer4Classification(nn.Module):
     """
     Prediction layer (cross_entropy or adaptive_softmax).
@@ -139,7 +155,7 @@ class PredLayer4Classification(nn.Module):
             self.classifier = nn.AdaptiveLogSoftmaxWithLoss(
                 in_features=in_features,
                 n_classes=n_labels,
-                cutoffs=params.asm_cutoffs,
+                cutoffs=[int(c) for c in params.asm_cutoffs.split(",")],
                 div_value=params.asm_div_value,
                 head_bias=True,  # default is False
             )
@@ -172,23 +188,37 @@ class PredLayer4Classification(nn.Module):
                     self.criterion = F.cross_entropy
                     #self.criterion = FocalLoss()
 
-    def forward(self, x, y, weights = None, get_scores=True):
+    def forward(self, x, y, weights = None, weight_out = None, get_scores=True):
         """
         Compute the loss, and optionally the scores.
         """
         #x = F.normalize(input = x, p=2, dim=1, eps=1e-12, out=None)
         x = self.proj(x)
-        #x = F.dropout(x, p=0.1, training=True)
+        #x = F.dropout(x, p=0.1, training=self.training)
         if self.asm is False:
+            scores = x.view(-1, self.n_labels)
             if self.bce : # For binary_cross_entropy_with_logits, binarize the target
                 w = (y != 0)
                 y = w.to(y.dtype)
-                #if weights is None :
-                #    weights = w.to(float) # mask for loss
+                """
+                if weights is None :
+                    weights = w.to(float) # mask for loss
+                #"""
+                """
+                if False :
+                    loss = 0
+                    n_classes = scores.size(1)
+                    for i in range(n_classes) :
+                        loss = loss + self.criterion(scores[:,i], y[:,i]) / n_classes
+                    return scores, loss
+                #"""
                 pass
-                
-            scores = x.view(-1, self.n_labels)
-            loss = self.criterion(scores, y, weight=weights)
+            
+            if weight_out is None :
+                loss = self.criterion(scores, y, weight=weights)
+            else :
+                loss = weight_out*self.criterion(scores, y, weight=weights, reduction="none")
+                loss = loss.mean()
         else:
             _, loss = self.classifier(x, y)
             scores = self.classifier.log_prob(x) if get_scores else None
@@ -217,11 +247,11 @@ class PredLayer4Regression(nn.Module):
         self.proj1 = nn.Sequential(*net)
         self.proj2 = nn.Sequential(*net)
         
-        self.criterion = nn.MSELoss()
+        self.criterion = F.mse_loss # nn.MSELoss()
         
         self.threshold = params.threshold
         
-    def forward(self, x, y, weights = None, get_scores=True):
+    def forward(self, x, y, weights = None, weight_out = None, get_scores=True):
         """
         Compute the loss and scores 
         """
@@ -230,8 +260,14 @@ class PredLayer4Regression(nn.Module):
         scores = y1 >= self.threshold
         
         b, c = y[:,0], y[:,1]
-        loss = self.criterion(y1, b) + self.criterion(y2, c)
-        
+        reduction='mean'
+        if weight_out is None :
+            loss = self.criterion(y1, b) + self.criterion(y2, c)
+        else :
+            loss = self.criterion(y1, b, reduction='none') + self.criterion(y2, c, reduction='none')
+            loss = weight_out*loss
+            loss = loss.mean()
+
         return scores, loss
 
 class PredLayer4Workers(nn.Module):
@@ -279,7 +315,7 @@ class PredLayer4Workers(nn.Module):
         self.topK = params.topK
         self.threshold = params.threshold
         
-    def forward(self, x, y, weights = None, get_scores=True):
+    def forward(self, x, y, weights = None, weight_out = None, get_scores=True):
         x = self.proj(x)
         
         b, c = y[:,0], y[:,1]
@@ -292,10 +328,10 @@ class PredLayer4Workers(nn.Module):
             y_pred = torch.empty_like(y).expand(self.topK, *y.shape)
         
         for i in range(self.num_workers) :
-            scores, loss = self.scores_proj[i](x, y=b[:,i])
+            scores, loss = self.scores_proj[i](x, y=b[:,i], weight_out=weight_out)
             t_loss = t_loss + loss
             
-            confs, loss = self.confidences_proj[i](x, y=c[:,i])
+            confs, loss = self.confidences_proj[i](x, y=c[:,i], weight_out=weight_out)
             t_loss = t_loss + loss
             
             k = 0
@@ -313,7 +349,7 @@ class PredLayer4Workers(nn.Module):
             batch_size = c.size(0)
             y_true = (b * c / c.sum(dim=1).reshape(batch_size, -1)).sum(dim=1)
             y_true_bin = (y_true >= self.threshold).float().unsqueeze(1)
-            scores, loss = self.classifier(x=x, y=y_true_bin)
+            scores, loss = self.classifier(x=x, y=y_true_bin, weight_out=weight_out)
             t_loss = t_loss + loss
             scores = self.sigmoid(scores).round().int() # = (self.sigmoid(scores) >= 0.5).int()
             return y_pred, t_loss/7, scores
@@ -342,10 +378,10 @@ class PredLayer4BinaryClassification(nn.Module):
         self.classifier = PredLayer4Classification(hidden_dim, n_labels = 1, params = params, criterion = criterion)
         self.sigmoid = nn.Sigmoid()
         
-    def forward(self, x, y, weights = None, get_scores=True):
+    def forward(self, x, y, weights = None, weight_out = None, get_scores=True):
         y = y.unsqueeze(1)
         x = self.proj(x)
-        scores, loss = self.classifier(x=x, y=y, weights = weights)
+        scores, loss = self.classifier(x=x, y=y, weights = weights, weight_out=weight_out)
         scores = self.sigmoid(scores).round().int() # = (self.sigmoid(scores) >= 0.5).int()
         return scores, loss
 
@@ -475,7 +511,7 @@ class XLMBertClassifier(nn.Module):
         self.finetune_layers = params.finetune_layers
         self.params = params
         
-    def forward(self, x, lengths, y, positions=None, langs=None, weights = None, get_scores = True):
+    def forward(self, x, lengths, y, positions=None, langs=None, weights = None, weight_out = None, get_scores = True):
         """
         Inputs:
             `x`        : LongTensor of shape (slen, bs)
@@ -488,10 +524,10 @@ class XLMBertClassifier(nn.Module):
             h = self.embedder.get_embeddings(x, lengths, positions=positions, langs=langs, whole_output = self.whole_output)
         
         if True :
-            return self.pred_layer(h, y, weights=weights)
+            return self.pred_layer(h, y, weights=weights, weight_out=weight_out)
         else :
             # L2 reg : weight_decay in optim handle this
-            scores, loss = self.pred_layer(h, y, weights=weights)
+            scores, loss = self.pred_layer(h, y, weights=weights, weight_out=weight_out)
             l2_lambda = 0.01
             l2_reg = 0
             for param in self.parameters():
@@ -625,7 +661,7 @@ class GoogleBertClassifier(nn.Module):
         self.params = params
         self.logger = logger
         
-    def forward(self, x, lengths, y, positions=None, langs=None, weights = None, get_scores = True):
+    def forward(self, x, lengths, y, positions=None, langs=None, weights = None, weight_out = None, get_scores = True):
         """
         Inputs:
             `x`        : LongTensor of shape (bs, slen)
@@ -636,7 +672,7 @@ class GoogleBertClassifier(nn.Module):
         else :
             h = self.embedder(x)[0] 
         
-        return self.pred_layer(h.transpose(0, 1) if self.whole_output else h[:, 0], y, weights=weights)
+        return self.pred_layer(h.transpose(0, 1) if self.whole_output else h[:, 0], y, weights=weights, weight_out=weight_out)
 
     def get_embedder_parameters(self, layer_range, log=True) :
         n_layers = len(self.embedder.encoder.layer)
@@ -695,7 +731,7 @@ class GoogleBertClassifier(nn.Module):
         return self
 
     def tokenize_and_cut(self, sentence):
-        tokens = self.tokenizer.tokenize(sentence) 
+        tokens = self.tokenizer.tokenize(sentence.strip()) 
         tokens = tokens[:self.max_input_length-2]
         return [self.tokenizer.cls_token_id] + self.tokenizer.convert_tokens_to_ids(tokens) + [self.tokenizer.sep_token_id]
 
@@ -722,6 +758,7 @@ class SimpleClassifier(nn.Module):
             if dico is not None :
                 self.dico = dico
                 input_dim = len(self.dico.id2word)
+                params.n_words = input_dim
             elif os.path.isfile(params.vocab) :
                 logger.info('Loading bpe vocabulary from %s'%params.vocab)
                 self.dico = Dictionary.read_vocab(params.vocab, special_tokens)
@@ -791,11 +828,17 @@ class SimpleClassifier(nn.Module):
         optimizer_p = get_optimizer(self.pred_layer.parameters(), params.optimizer_p)
         return optimizer_e, optimizer_p
     
-    def tokenize(self, x) : 
-        return x.split(" ")
+    def tokenize(self, x) :
+        wl = True
+        x = x.strip()
+        if wl :
+            return x.split(" ")
+        else :
+            return re.split(r'', x) 
+        
     
     def tokenize_and_cut(self, sentence):
-        tokens = self.tokenize(sentence) 
+        tokens = self.tokenize(sentence.strip()) 
         tokens = tokens[:self.max_input_length]
         return [self.vocab.stoi[t] for t in tokens]
 
@@ -815,6 +858,7 @@ class RecurrentClassifier(SimpleClassifier):
         
     def to_tensor(self, sentences):
         if not self.use_pretrained_word_embedding :
+            sentences = [self.tokenize(s.strip()) for s in sentences]
             return to_tensor(sentences, self.pad_index, dico = self.dico, batch_first = False)
         else :
             return to_tensor(sentences, self.pad_index, tokenize_and_cut = self.tokenize_and_cut, batch_first = False)
@@ -840,7 +884,7 @@ class RNNClassifier(RecurrentClassifier):
         self.net = nn.RNN(self.embedding_dim, self.hidden_dim, num_layers = self.n_layers, 
                             bidirectional=self.bidirectional, dropout = 0 if self.n_layers < 2 else params.dropout)
         
-    def forward(self, x, lengths, y, positions=None, langs=None, weights = None, get_scores = True):
+    def forward(self, x, lengths, y, positions=None, langs=None, weights = None, weight_out = None, get_scores = True):
         """
         Inputs:
             `x`        : LongTensor of shape (slen, bs)
@@ -874,7 +918,7 @@ class RNNClassifier(RecurrentClassifier):
         else :
             hidden = output.transpose(0, 1)
             
-        return self.pred_layer(self.dropout(hidden), y, weights=weights)
+        return self.pred_layer(self.dropout(hidden), y, weights=weights, weight_out=weight_out)
     
 class LSTMClassifier(RecurrentClassifier):
     def __init__(self, n_labels, params, logger, dico : Dictionary = None, with_output = True):
@@ -887,7 +931,7 @@ class LSTMClassifier(RecurrentClassifier):
                             bidirectional=self.bidirectional, 
                             dropout = 0 if self.n_layers < 2 else params.dropout)
         
-    def forward(self, x, lengths, y, positions=None, langs=None, weights = None, get_scores = True) :
+    def forward(self, x, lengths, y, positions=None, langs=None, weights = None, weight_out = None, get_scores = True) :
         """
         Inputs:
             `x`        : LongTensor of shape (slen, bs)
@@ -919,7 +963,7 @@ class LSTMClassifier(RecurrentClassifier):
         else :
             hidden = output.transpose(0, 1)
         
-        return self.pred_layer(self.dropout(hidden), y, weights=weights)
+        return self.pred_layer(self.dropout(hidden), y, weights=weights, weight_out=weight_out)
 
 class ConvolutionalClassifier(SimpleClassifier):
     def __init__(self, n_labels, params, logger, dico : Dictionary = None, with_output = True):
@@ -936,6 +980,7 @@ class ConvolutionalClassifier(SimpleClassifier):
             
     def to_tensor(self, sentences):
         if not self.use_pretrained_word_embedding :
+            sentences = [self.tokenize(s.strip()) for s in sentences]
             return to_tensor(sentences, self.pad_index, dico = self.dico, batch_first = True)
         else :
             return to_tensor(sentences, self.pad_index, tokenize_and_cut = self.tokenize_and_cut, batch_first = True)
@@ -952,7 +997,7 @@ class CNNClassifier(ConvolutionalClassifier):
             for fs in self.filter_sizes
         ])
         
-    def forward(self, x, lengths, y, positions=None, langs=None, weights = None, get_scores = True) :
+    def forward(self, x, lengths, y, positions=None, langs=None, weights = None, weight_out = None, get_scores = True) :
         """
         Inputs:
             `x`        : LongTensor of shape (bs, slen)
@@ -972,7 +1017,7 @@ class CNNClassifier(ConvolutionalClassifier):
         else :
             cat = self.dropout(torch.cat(pooled, dim = 1)) # bs x n_filters * len(filter_sizes)
         
-        return self.pred_layer(cat, y, weights=weights)
+        return self.pred_layer(cat, y, weights=weights, weight_out=weight_out)
     
     def fwd(self, tensor, lengths, mask):
         print(tensor.shape)
@@ -997,7 +1042,7 @@ class CNN1dClassifier(ConvolutionalClassifier):
             for fs in self.filter_sizes
         ])
         
-    def forward(self, x, lengths, y, positions=None, langs=None, weights = None, get_scores = True) :
+    def forward(self, x, lengths, y, positions=None, langs=None, weights = None, weight_out = None, get_scores = True) :
         """
         Inputs:
             `x`        : LongTensor of shape (bs, slen)
@@ -1018,7 +1063,7 @@ class CNN1dClassifier(ConvolutionalClassifier):
         else :
             cat = self.dropout(torch.cat(pooled, dim = 1)) # bs x n_filters * len(filter_sizes)
             
-        return self.pred_layer(cat, y, weights=weights)
+        return self.pred_layer(cat, y, weights=weights, weight_out=weight_out)
 
     def fwd(self, tensor, lengths, mask):
         tensor = tensor.permute(0, 2, 1)

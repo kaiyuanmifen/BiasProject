@@ -97,7 +97,8 @@ def load_dataset(params, logger, model) :
     return train_dataset, val_dataset
 
 def get_loss(model, batch, params, weights, logits = None, loss = None, mode="train", epoch=0): 
-    (x, lengths, langs), y1, y2 = batch
+    (x, lengths, langs), y1, y2, weight_out = batch
+    weight_out = None if not params.weighted_out else weight_out.to(params.device)
     if params.version in [1, 2, 3, 4] : 
         if logits is None :   
             y = y2 if params.version == 3 else y1
@@ -107,7 +108,10 @@ def get_loss(model, batch, params, weights, logits = None, loss = None, mode="tr
                 y = torch.where(torch.rand(y.size()) > params.outliers, y, torch.empty_like(y).random_(params.n_labels))
                 torch.manual_seed(params.random_seed)
             langs = langs.to(params.device) if params.n_langs > 1 else None
-            logits, loss = model(x.to(params.device), lengths.to(params.device), y=y.to(params.device), langs=langs, weights = weights)
+            logits, loss = model(
+                x.to(params.device), lengths.to(params.device), y=y.to(params.device), langs=langs, 
+                weights = weights, weight_out = weight_out
+            )
         #logits = F.softmax(logits, dim = -1)
         
         stats = {}
@@ -118,7 +122,7 @@ def get_loss(model, batch, params, weights, logits = None, loss = None, mode="tr
         stats["y1"] = y1.detach().cpu()#.numpy()
         
         s = get_stats(logits, y2, params)
-        assert (s["label_pred"] == s["top%d_label_pred"%1]).all()
+        #assert (s["label_pred"] == s["top%d_label_pred"%1]).all()
         stats = {**stats, **s}
         stats["logits"] = logits.detach().cpu()
         stats["y2"] = y2.cpu()
@@ -143,9 +147,15 @@ def get_loss(model, batch, params, weights, logits = None, loss = None, mode="tr
             torch.manual_seed(params.random_seed)
         langs = langs.to(params.device) if params.n_langs > 1 else None
         if params.version == 6 :
-            scores, loss, scores1 = model(x.to(params.device), lengths.to(params.device), y=y1.to(params.device), langs=langs, weights = weights)
+            scores, loss, scores1 = model(
+                x.to(params.device), lengths.to(params.device), y=y1.to(params.device), 
+                langs=langs, weights = weights, weight_out = weight_out
+            )
         else :
-            scores, loss = model(x.to(params.device), lengths.to(params.device), y=y1.to(params.device), langs=langs, weights = weights)
+            scores, loss = model(
+                x.to(params.device), lengths.to(params.device), y=y1.to(params.device), 
+                langs=langs, weights = weights, weight_out = weight_out
+            )
             
         stats = {}
         n_words = lengths.sum().item()

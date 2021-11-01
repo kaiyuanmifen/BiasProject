@@ -149,7 +149,6 @@ def to_tensor(sentences, pad_index, dico = None, tokenize_and_cut = None, batch_
         assert type(sentences) in [list, tuple]
     
     assert (dico is None) ^ (tokenize_and_cut is None)
-    
     if dico is not None :
         # trucate ~ self.params.max_len ??
         bs = len(sentences)
@@ -210,7 +209,7 @@ def init_pretrained_word_embedding(model, sentences, params, logger = None) :
     #TEXT = torchtext.legacy.data.Field(tokenize = tokenize, batch_first = True, pad_token=PAD_WORD, unk_token=UNK_WORD)
 
     TEXT.build_vocab(sentences, max_size = max_vocab_size, vectors =  vectors, unk_init = torch.Tensor.normal_)
-    print(f"Unique tokens in TEXT vocabulary: {len(TEXT.vocab)}")
+    logger.info(f"Unique tokens in TEXT vocabulary: {len(TEXT.vocab)}")
 
     #LABEL = torchtext.legacy.data.LabelField(dtype = torch.float)
     #LABEL.build_vocab(labels)

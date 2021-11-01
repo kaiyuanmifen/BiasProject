@@ -115,6 +115,8 @@ def add_argument(parser) :
                             This supports negative indexes ( _1 or -1 refers to the last layer for example)")
     parser.add_argument("--weighted_training", type=bool_flag, default=False,
                         help="Use a weighted loss during training")
+    parser.add_argument("--weighted_out", type=bool_flag, default=False,
+                        help="Use a weighted out in loss during training")
     #parser.add_argument("--dropout", type=float, default=0, help="Fine-tuning dropout")
     parser.add_argument("--optimizer_e", type=str, default="adam,lr=0.0001",
                         help="Embedder (pretrained model) optimizer")
@@ -167,6 +169,8 @@ def add_argument(parser) :
                             leave-0.2-out, leave-1000-out, shuffle-split:p=0.2,test_size=0.2")
 
     parser.add_argument('--outliers', type=float, default=0, help="")
+    
+    parser.add_argument('--yoshua', type=bool_flag, default=False, help="pred_score = sum_i i * softmax_logits(i)")
 
     return parser
 

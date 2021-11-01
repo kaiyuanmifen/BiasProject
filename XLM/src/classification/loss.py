@@ -13,43 +13,65 @@ import torch.nn as nn
 #eps = torch.finfo(torch.float32).eps # 1.1920928955078125e-07
 #eps = 1e-20 # TODO : search for the smallest `eps` number under pytorch such as `torch.log(eps) != -inf`
 
-def bias_classification_loss(q_c: Tensor, p_c: Tensor, weight = None, 
-                                reduction : str = "mean", softmax = True, sigmoid = False) -> Tensor:
+def bias_classification_loss(q_c: Tensor, p_c: Tensor, weight = None, weight_out = None, 
+                                reduction : str = "mean", softmax = True, sigmoid = False, eps = 1e-12) -> Tensor:
+    """
+    q_c ~ (bach_size, n_class) : logits if softmax = True or sigmoid = True, predicted probability vector otherwise
+    p_c ~ (bach_size, n_class) : expected probability vector 
+    weight_in ~ (bach_size, n_class) or (1, n_class) : 
+    weight_out ~ (bach_size, 1) : 
+    """
     assert reduction in ["mean", "sum", "none"]
     #assert torch.equal(torch.sum(p_c, dim = 1), torch.ones(bach_size, dtype=p_c.dtype))
     #assert torch.equal(torch.sum(q_c, dim = 1), torch.ones(bach_size, dtype=q_c.dtype))
     assert not (softmax and sigmoid)
     
-    if weight is None :
-        weight = torch.ones_like(p_c)
+    weight_in = weight
+    if weight_in is None :
+        weight_in = torch.ones_like(p_c)
     else :
-        if weight.dim() == 1 :
-            assert list(weight.shape) == [p_c.size(1)]
-            weight = weight.expand_as(p_c) 
-        elif weight.dim() == 2 :
-            assert weight.shape == p_c.shape
+        if weight_in.dim() == 1 :
+            assert list(weight_in.shape) == [p_c.size(1)]
+            weight_in = weight_in.expand_as(p_c) 
+        elif weight_in.dim() == 2 :
+            assert weight_in.shape == p_c.shape
         else :
-            raise RuntimeError("weight.shape incorrect")
-    
+            raise RuntimeError("weight_in.shape incorrect")
+
+    batch_size = p_c.size(0)
+    if weight_out is None :
+        weight_out = torch.ones(batch_size).to(p_c.device)
+    else :
+        assert weight_out.shape == torch.Size([batch_size])
+
+    #eps = torch.finfo(q_c.dtype).eps
     if softmax :
         # Multi-class approach
-        CE = torch.sum(- weight * p_c * F.log_softmax(q_c, dim = 1), dim = 1) # batch_size
+        CE = weight_out * torch.sum(- weight_in * p_c * F.log_softmax(q_c, dim = 1), dim = 1) # batch_size
+        q_c = F.softmax(q_c, dim = 1)
     elif sigmoid :
         # Multi-label approach
-        #CE = torch.sum(- weight * p_c * F.logsigmoid(q_c), dim = 1) # batch_size
-        CE = torch.sum(- weight * (p_c * F.logsigmoid(q_c) + (1-p_c) * torch.log(1 - torch.sigmoid(q_c))), dim = 1) # batch_size
+        CE = weight_out * torch.sum(- weight_in * p_c * F.logsigmoid(q_c), dim = 1) # batch_size
+        #CE = weight_out * torch.sum(- weight_in * (p_c * F.logsigmoid(q_c) + (1-p_c) * torch.log(1 - torch.sigmoid(q_c))), dim = 1) # batch_size
+        torch.sigmoid(q_c, out=q_c)
+        raise RuntimeError("")
     else :
-        CE = torch.sum(- weight * p_c * torch.log(q_c + torch.finfo(q_c.dtype).eps), dim = 1) # batch_size
+        #CE = torch.sum(- weight_in * p_c * torch.log(q_c + eps), dim = 1) # batch_size
+        CE = weight_out * torch.sum(- weight_in * p_c * torch.log(q_c + eps), dim = 1) # batch_size
+        
+    l1_loss = 0 # F.l1_loss(q_c, p_c)
+    l2_loss = 0 # F.mse_loss(q_c, p_c)
+
     if reduction == "none" :
         return CE
     elif reduction == "mean" :
-        return torch.mean(CE) # or CE.mean()
+        return torch.mean(CE) + l1_loss + l2_loss # or CE.mean()
     elif reduction == "sum" :
-        return torch.sum(CE) # or CE.sum()
+        return torch.sum(CE) + l1_loss + l2_loss # or CE.sum()
 
-def bce_bias_classification_loss(q_c: Tensor, p_c: Tensor, weight = None, 
+def bce_bias_classification_loss(q_c: Tensor, p_c: Tensor, weight = None, weight_out = None,
                                     reduction : str = "mean") -> Tensor :
-    return bias_classification_loss(q_c, p_c, weight, reduction, softmax = False, sigmoid = True)
+    return bias_classification_loss(q_c, p_c, weight, weight_out, reduction, softmax = False, sigmoid = True)
 
 class BiasClassificationLoss(nn.Module):
     def __init__(self, weight = None, reduction: str = 'mean', softmax = False) -> None:
@@ -59,9 +81,10 @@ class BiasClassificationLoss(nn.Module):
         self.reduction = reduction
         self.softmax = softmax
     
-    def forward(self, q_c: Tensor, p_c: Tensor) -> Tensor:
+    def forward(self, q_c: Tensor, p_c: Tensor, weight_out = None) -> Tensor:
         """assume p_c, q_c is (batch_size, num_of_classes)"""
-        return bias_classification_loss(q_c, p_c, self.weight, self.reduction, self.softmax)
+        return bias_classification_loss(
+            q_c, p_c, self.weight, weight_out, self.reduction, self.softmax)
     
 def kl_divergence_loss(logits, target, weight=None, softmax = False) :
     # https://discuss.pytorch.org/t/kl-divergence-loss/65393/4?u=pascal_notsawo
