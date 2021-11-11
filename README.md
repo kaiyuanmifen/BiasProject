@@ -2,7 +2,7 @@
 
 See [Tikquuss/meta_XLM](https://github.com/Tikquuss/meta_XLM)
 
-# Classification : fine-tune a pretrained meta-model on classification task, on train a model from scratch
+# Classification : fine-tune a pretrained meta-model on classification task, or train a model from scratch on classification task
 
 Model : google BERT, BERT with TIM (com and no-com), LSTM, RNN, CNN
 
