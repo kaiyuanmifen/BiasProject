@@ -140,6 +140,7 @@ def add_argument(parser) :
                         choices=[0, 1], 
                         help=  "0 : MLM step + Classif step \
                                 1 : MLM loss + Classif loss")
+    parser.add_argument('--sedat', type = bool_flag, default=False, help=  "")
     import re
     import argparse
     def cv(arg_value):

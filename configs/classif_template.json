@@ -50,6 +50,7 @@
     "simple_model":"",
     "pretrain_config":"",
     "pretrain_type" : "0",
+    "sedat":"False",
     "cross_validation":"",
     "outliers":"0",
     "yoshua":"False",

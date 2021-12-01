@@ -35,6 +35,7 @@ from .. import one_step, end_of_epoch as pretrainer_eoe
 from ..evaluation.evaluator import convert_to_text
 
 logger = getLogger()
+eps = 1e-12
 
 def cross_validatation(X, y = None, shuffle : bool = False, random_state = None, kwargs = {}) :
     """https://scikit-learn.org/stable/modules/cross_validation.html"""
@@ -149,6 +150,45 @@ def get_cv_kwargs(cv_type : str, data : None) -> dict:
         return {"cv_type":"shuffle-split", "p": p, "test_size": test_size}
     else :
         raise NotImplementedError("cv_type = %s is not implemented"%cv_type)
+
+
+def convert_to_text(batch, lengths, dico, params):
+    """
+    Convert a batch of sentences to a list of text sentences.
+    """
+    batch = batch.cpu().numpy()
+    lengths = lengths.cpu().numpy()
+    sentences = []
+    slen, bs = batch.shape
+    for j in range(bs):
+        words = []
+        for k in range(1, lengths[j]):
+            if batch[k, j] == params.eos_index:
+                break
+            words.append(dico[batch[k, j]])
+        sentences.append(" ".join(words))
+    return sentences
+
+def y_to_sentence(x, y, lengths, dico, params) :
+    max_len = lengths.max().item()
+    bs = lengths.size(0)
+    pad_index = params.pad_index
+    bos_index = params.bos_index
+    eos_index = params.eos_index
+    not_nul_lengths = x.size(0) - torch.sum(x == pad_index, dim=0)
+    generated = lengths.new(max_len+1, bs) 
+    generated.fill_(pad_index)       
+    generated[0].fill_(bos_index)    
+    k = 0
+    for i in range(max_len) :
+        for j in range(bs) :
+            if i+1 <=  not_nul_lengths[j] - 1 :
+                generated[i+1][j] = y[k]
+                k = k + 1
+            #else :
+            #    generated[not_nul_lengths[j]][j] = eos_index
+    sentence = convert_to_text(generated, lengths, dico, params)
+    return sentence
 
 class Trainer(object):
     """Training Helper Class"""
@@ -556,7 +596,8 @@ class Trainer(object):
         progress = str(self.stats['progress'])+"% -"
         # log progress + speed + stats + learning rate
         self.logger.info("")
-        self.logger.info(s_iter + progress + s_speed + s_stat + s_lr)
+        self.logger.info(s_iter + progress + s_speed)
+        self.logger.info(s_stat + s_lr)
 
     def classif_step(self, get_loss, batch, total_stats, i) :
         # forward / loss
@@ -575,7 +616,7 @@ class Trainer(object):
         self.stats['progress'] = min(int(((i+1)/self.params.train_num_step)*100), 100) 
 
         for name in stats.keys() :
-            if ("loss" in name or 'acc' in name or "f1_score" in name or "IoU" in name or "MCC" in name) and not "top" in name:
+            if ("loss" in name or "ppl" in name or 'acc' in name or "f1_score" in name or "IoU" in name or "MCC" in name) and not "top" in name:
                 self.stats[name] = self.stats.get(name, []) + [stats[name]]
 
         self.iter()
@@ -609,7 +650,18 @@ class Trainer(object):
         total_stats = []
         do_mlm, do_clm, sedat = self.do_mlm, self.do_clm, self.sedat 
         mlm_loss, clm_loss = 0, 0
+        
+        total_stats = []
+        test = True
+        if test :
+            if self.do_mlm :
+                loss_mlm, n_words_mlm, xe_loss_mlm, n_valid_mlm = 0, 0, 0, 0
+                rng = np.random.RandomState(0)
+            if self.do_clm :
+                loss_clm, n_words_clm, xe_loss_clm, n_valid_clm = 0, 0, 0, 0
+    
         for i, batch in enumerate(self.train_data_iter):
+            stats_ = {}
             mlm_loss_, clm_loss_ = None, None
             flag = False
             flag2 = True
@@ -624,68 +676,118 @@ class Trainer(object):
                     U = self.pre_trainer.model('fwd', x=x_, lengths=lengths_, positions=positions_, langs=langs_, causal=False)
                 if do_mlm :
                     try :
-                        x_, y_, pred_mask_ = self.pre_trainer.mask_out(x, lengths)
-                        # cuda
-                        x_, y_, pred_mask_, lengths_, positions_, langs_ = to_cuda(x_, y_, pred_mask_, lengths, positions, langs)
-                        # forward / loss
-                        tensor = self.pre_trainer.model('fwd', x=x_, lengths=lengths_, positions=positions_, langs=langs_, causal=False)
-                        _, mlm_loss = self.pre_trainer.model('predict', tensor=tensor, pred_mask=pred_mask_, y=y_, get_scores=False)
-                        #mlm_loss  = float(self.params.lambda_mlm) * mlm_loss 
-                        lang1 = "en"
-                        lang2 = None
-                        self.pre_trainer.stats[('MLM-%s' % lang1) if lang2 is None else ('MLM-%s-%s' % (lang1, lang2))].append(mlm_loss.item())
-                        #self.stats["mlm_loss"] = mlm_loss.item()
-                        mlm_loss_ = mlm_loss.item()
-                        mlm_loss  = float(self.params.lambda_mlm) * mlm_loss 
-                        if flag :
-                            self.pre_trainer.optimize(mlm_loss)
+                        flag3 = True
+                        m = lengths.max()
+                        if sedat :
+                            # pre-train the encoder and the decoder on positive/unbiased sentences
+                            positive_label = y1.squeeze() < self.params.threshold
+                            x_ = x[:,positive_label]
+                            lengths_ = lengths[positive_label]
+                            #positions_ = positions[:,positive_label]
+                            positions_ =  None
+                            flag3 = positive_label.any()
+                        else :
+                            # copy
+                            x_ = x + 0
+                            lengths_ = lengths + 0
+                            #positions_ = positions + 0
+                            positions_ = None
+
+                        if flag3 :
+                            x_, y_, pred_mask_ = self.pre_trainer.mask_out(x_, lengths_)
+                            # cuda
+                            x_, y_, pred_mask_, lengths_, positions_, langs_ = to_cuda(x_, y_, pred_mask_, lengths_, positions_, langs)
+                            # forward / loss
+                            tensor = self.pre_trainer.model('fwd', x=x_, lengths=lengths_, positions=positions_, langs=langs_, causal=False)
+                            word_scores, mlm_loss = self.pre_trainer.model('predict', tensor=tensor, pred_mask=pred_mask_, y=y_, get_scores=False)
+
+                            y_hat = word_scores.max(1)[1]
+                            #if self.n_total_iter % self.log_interval != 0:
+                            #    input_ = y_to_sentence(x_, y_, lengths_, self.evaluator.dico, self.params)
+                            #    generated = y_to_sentence(x_, y_hat, lengths_, self.evaluator.dico, self.params)
+                            #    self.logger.info('mlm input : %s'%input_)
+                            #    self.logger.info('mlm gen : %s'%generated)
+
+                            # update stats
+                            n_words = y_.size(0)
+                            xe_loss = mlm_loss.item() * len(y_)
+                            n_valid = (y_hat == y_).sum().item()
+                            stats_["mlm_loss"] = mlm_loss.item()
+                            stats_["mlm_ppl"] = np.exp(xe_loss / (n_words+eps))
+                            stats_["mlm_acc"] = 100. * n_valid / (n_words+eps)
+                            loss_mlm += mlm_loss.item()
+                            n_words_mlm += n_words
+                            xe_loss_mlm += xe_loss
+                            n_valid_mlm += n_valid
+                            
+                            #mlm_loss  = float(self.params.lambda_mlm) * mlm_loss 
+                            lang1 = "en"
+                            lang2 = None
+                            self.pre_trainer.stats[('MLM-%s' % lang1) if lang2 is None else ('MLM-%s-%s' % (lang1, lang2))].append(mlm_loss.item())
+                            #self.stats["mlm_loss"] = mlm_loss.item()
+                            mlm_loss_ = mlm_loss.item()
+                            mlm_loss  = float(self.params.lambda_mlm) * mlm_loss 
+                            if flag :
+                                self.pre_trainer.optimize(mlm_loss)
                     except RuntimeError: #cannot sample n_sample <= 0 samples
                         mlm_loss = 0
                 
                 if do_clm :
                     try :
                         m = lengths.max()
+                        flag3 = True
                         if sedat :
                             # pre-train the encoder and the decoder on positive/unbiased sentences
-                            positive_label = 0
-                            x_ = x[:,y1.squeeze()==positive_label]
-                            lengths_ = lengths[y1.squeeze()==positive_label]
+                            positive_label = y1.squeeze() < self.params.threshold
+                            x_ = x[:,positive_label]
+                            lengths_ = lengths[positive_label]
+                            flag3 = positive_label.any()
                         else :
                             # copy
                             x_ = x + 0
                             lengths_ = lengths + 0
                         
-                        alen = torch.arange(m, dtype=torch.long, device=lengths_.device)
-                        pred_mask_ = alen[:, None] < lengths_[None] - 1
-                        if self.pre_trainer.params.context_size > 0:  # do not predict without context
-                            pred_mask_[:self.pre_trainer.params.context_size] = 0
-                        y_ = x_[1:].masked_select(pred_mask_[:-1])
-                        assert pred_mask_.sum().item() == y_.size(0)
-                        # cuda
-                        x_, lengths_, langs_, pred_mask_, y_ = to_cuda(x_, lengths_, langs, pred_mask_, y_)
-                        # forward / loss
-                        tensor = self.pre_trainer.model('fwd', x=x_, lengths=lengths_, langs=langs_, causal=True)
-                        
-                        _, clm_loss = self.pre_trainer.model('predict', tensor=tensor, pred_mask=pred_mask_, y=y_, get_scores=False)
-                        
-                        ###################
-                        max_len = int(1.5 * m.item() + 10)
-                        tensor = tensor.transpose(0, 1)
-                        tensor = tensor.half() if self.pre_trainer.params.fp16 else tensor
-                        generated, lengths = self.pre_trainer.model.generate(tensor, lengths_, langs_, max_len=max_len)
-                        s = convert_to_text(generated, lengths_, self.pre_trainer.dico, self.pre_trainer.params)
-                        print()
-                        print(s)
-                        ###################
+                        if flag3 :
+                            alen = torch.arange(m, dtype=torch.long, device=lengths_.device)
+                            pred_mask_ = alen[:, None] < lengths_[None] - 1
+                            if self.pre_trainer.params.context_size > 0:  # do not predict without context
+                                pred_mask_[:self.pre_trainer.params.context_size] = 0
+                            y_ = x_[1:].masked_select(pred_mask_[:-1])
+                            assert pred_mask_.sum().item() == y_.size(0)
+                            # cuda
+                            x_, lengths_, langs_, pred_mask_, y_ = to_cuda(x_, lengths_, langs, pred_mask_, y_)
+                            # forward / loss
+                            tensor = self.pre_trainer.model('fwd', x=x_, lengths=lengths_, langs=langs_, causal=True)
+                            
+                            word_scores, clm_loss = self.pre_trainer.model('predict', tensor=tensor, pred_mask=pred_mask_, y=y_, get_scores=False)
+                            
+                            y_hat = word_scores.max(1)[1]
+                            if self.n_total_iter % self.log_interval != 0:
+                                input_ = y_to_sentence(x_, y_, lengths_, self.evaluator.dico, self.params)
+                                generated = y_to_sentence(x_, y_hat, lengths_, self.evaluator.dico, self.params)
+                                self.logger.info('clm input : %s'%input_)
+                                self.logger.info('clm gen : %s'%generated)
 
-                        lang1 = "en"
-                        lang2 = None
-                        self.pre_trainer.stats[('CLM-%s' % lang1) if lang2 is None else ('CLM-%s-%s' % (lang1, lang2))].append(clm_loss.item())
-                        #self.stats["clm_loss"] = clm_loss.item()
-                        clm_loss_ = clm_loss.item() 
-                        clm_loss  = float(self.pre_trainer.params.lambda_clm) * clm_loss 
-                        if flag :
-                            self.pre_trainer.optimize(clm_loss)
+                            # update stats
+                            n_words = y_.size(0)
+                            xe_loss = clm_loss.item() * len(y_)
+                            n_valid = (y_hat == y_).sum().item()
+                            stats_["clm_loss"] = clm_loss.item()
+                            stats_["clm_ppl"] = np.exp(xe_loss / (n_words+eps))
+                            stats_["clm_acc"] = 100. * n_valid / (n_words+eps)
+                            loss_clm += clm_loss.item()
+                            n_words_clm += n_words
+                            xe_loss_clm += xe_loss
+                            n_valid_clm += n_valid
+
+                            lang1 = "en"
+                            lang2 = None
+                            self.pre_trainer.stats[('CLM-%s' % lang1) if lang2 is None else ('CLM-%s-%s' % (lang1, lang2))].append(clm_loss.item())
+                            #self.stats["clm_loss"] = clm_loss.item()
+                            clm_loss_ = clm_loss.item() 
+                            clm_loss  = float(self.pre_trainer.params.lambda_clm) * clm_loss 
+                            if flag :
+                                self.pre_trainer.optimize(clm_loss)
                     except RuntimeError as e: 
                         clm_loss = 0
 
@@ -703,10 +805,12 @@ class Trainer(object):
                 logits, classif_loss = self.model.predict(tensor, y.to(self.params.device), weights = self.train_data_iter.weights)
                 #loss, stats = get_loss(self.model, batch, self.params, self.train_data_iter.weights, mode="train", epoch = self.epoch)
                 _, stats = get_loss(None, batch, self.params, None, logits = logits, loss = classif_loss, mode="train", epoch = self.epoch)
+                
                 if mlm_loss_ is not None :
-                    stats["mlm_loss"] = mlm_loss_
+                    stats_["mlm_loss"] = mlm_loss_
                 if clm_loss_ is not None :
-                    stats["clm_loss"] = clm_loss_
+                    stats_["clm_loss"] = clm_loss_
+                stats = {**stats_, **stats}
             else :
                 # forward / loss
                 classif_loss, stats = get_loss(self.model, batch, self.params, self.train_data_iter.weights, mode="train", epoch = self.epoch)
@@ -718,7 +822,7 @@ class Trainer(object):
                 # optimize
                 self.optimize(loss, retain_graph = self.test)
                 if self.test :
-                    self.pre_trainer.optimize(loss)
+                    self.pre_trainer.optimize(loss)            
 
             total_stats.append(stats)
 
@@ -729,7 +833,7 @@ class Trainer(object):
             self.stats['progress'] = min(int(((i+1)/self.params.train_num_step)*100), 100) 
 
             for name in stats.keys() :
-                if ("loss" in name or 'acc' in name or "f1_score" in name or "IoU" in name or "MCC" in name) and not "top" in name:
+                if ("loss" in name or 'ppl' in name or 'acc' in name or "f1_score" in name or "IoU" in name or "MCC" in name) and not "top" in name:
                     self.stats[name] = self.stats.get(name, []) + [stats[name]]
 
             self.iter()
@@ -737,6 +841,28 @@ class Trainer(object):
     
             if self.epoch_size < self.n_sentences :
                 break
+
+        if self.test :
+            pre_train_scores = {}
+            prefix = "train_"
+            #prefix = ""
+            L = i + 1
+            if self.do_mlm :
+                # log
+                self.logger.info("MLM : Found %i words. %i were predicted correctly." % (n_words_mlm, n_valid_mlm))
+                    # compute loss, perplexity and prediction accuracy
+                pre_train_scores["%s%s"%(prefix, "mlm_loss")] = loss_mlm / L
+                pre_train_scores["%s%s"%(prefix, "mlm_ppl")] = np.exp(xe_loss_mlm / (n_words_mlm+eps))
+                pre_train_scores["%s%s"%(prefix, "mlm_acc")] = 100. * n_valid_mlm / (n_words_mlm+eps)
+            if self.do_clm :
+                # log
+                self.logger.info("CLM : Found %i words. %i were predicted correctly." % (n_words_clm, n_valid_clm))
+                # compute perplexity and prediction accuracy
+                pre_train_scores["%s%s"%(prefix, "clm_loss")] = loss_clm / L
+                pre_train_scores["%s%s"%(prefix, "clm_ppl")]  = np.exp(xe_loss_clm / (n_words_clm+eps))
+                pre_train_scores["%s%s"%(prefix, "clm_acc")] = 100. * n_valid_clm / (n_words_clm+eps)
+
+            self.logger.info(pre_train_scores)
 
         return total_stats
 
@@ -765,7 +891,8 @@ class Trainer(object):
                         positions = None
                         langs = None
                         # words to predict
-                        x, y, pred_mask = self.mask_out(x, lengths, rng, data_key = data_key)
+                        #x, y, pred_mask = self.pre_trainer.mask_out(x, lengths, rng)
+                        x, y, pred_mask = self.pre_trainer.mask_out(x, lengths)
                         # cuda
                         x, y, pred_mask, lengths, positions, langs = to_cuda(x, y, pred_mask, lengths, positions, langs)
                         tensor = self.pre_trainer.model('fwd', x=x, lengths=lengths, positions=positions, langs=langs, causal=False)
@@ -920,11 +1047,12 @@ class Trainer(object):
         self.data_summary()
 
         self.test = not self.params.pretrain_type == 0 and self.pre_trainer is not None
-        # TODO
-        self.do_mlm = False
-        self.do_clm = True
-        self.sedat = True
-        assert self.do_mlm + self.sedat != 2
+        if self.pre_trainer is not None :
+            # TODO
+            self.do_mlm = self.pre_trainer.params.mlm_steps != []
+            self.do_clm = self.pre_trainer.params.clm_steps != []
+        self.sedat = self.params.sedat
+        #assert self.do_mlm + self.sedat != 2
         
         for _ in range(self.params.max_epoch):
             
@@ -1059,3 +1187,4 @@ def plot_all_scores(scores=None, from_path="") :
                 if k == len(to_plot) :
                     break
     plt.show()
+

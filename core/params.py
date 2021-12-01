@@ -417,6 +417,7 @@ config_dic = {
     "simple_model":[str, ""],
     "pretrain_config":[str, ""],
     "pretrain_type":[int, 0],
+    "sedat" : [bool, False],
     "cross_validation":[str, ""],
     "outliers":[float, 0],
     "yoshua":[bool, False],
