@@ -500,7 +500,8 @@ class XLMBertClassifier(nn.Module):
             else :
                 params.lang = params.lgs
             params.lang_id = params.lang2id[params.lang]
-            params.freeze_transformer = False
+            params.freeze_transformer = True
+            params.finetune_layers == ""
             
         self.freeze_transformer = params.freeze_transformer
         params.hidden_dim = d_model if params.hidden_dim == -1 else params.hidden_dim
@@ -534,10 +535,10 @@ class XLMBertClassifier(nn.Module):
                 l2_reg += torch.norm(param)
             return scores, loss + l2_lambda * l2_reg
 
-    def predict(self, tensor, y, weights):
+    def predict(self, tensor, y, weights, weight_out = None):
         """
         """
-        return self.pred_layer(tensor[0] if not self.whole_output else tensor, y, weights=weights)
+        return self.pred_layer(tensor[0] if not self.whole_output else tensor, y, weights=weights, weight_out = weight_out)
 
     def get_optimizers(self, params) :
         optimizer_p = get_optimizer(self.pred_layer.parameters(), params.optimizer_p)
@@ -673,6 +674,12 @@ class GoogleBertClassifier(nn.Module):
             h = self.embedder(x)[0] 
         
         return self.pred_layer(h.transpose(0, 1) if self.whole_output else h[:, 0], y, weights=weights, weight_out=weight_out)
+
+    def predict(self, h, y, weights, weight_out = None):
+        """
+        h : [batch size, sent len, emb dim]
+        """
+        return self.pred_layer(h.transpose(0, 1) if self.whole_output else h[:, 0], y, weights=weights, weight_out = weight_out)
 
     def get_embedder_parameters(self, layer_range, log=True) :
         n_layers = len(self.embedder.encoder.layer)

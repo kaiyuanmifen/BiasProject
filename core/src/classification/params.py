@@ -184,7 +184,7 @@ def check_parameters(params) :
             #assert os.path.isfile(params.vocab) or params.use_pretrained_word_embedding
             assert params.model_name in ['RNN', 'LSTM', 'CNN', 'CNN1d'] # TODO : GRU
         else : # XLM
-            assert os.path.isfile(params.model_path) #or os.path.isfile(params.reload_checkpoint)
+            assert os.path.isfile(params.model_path) or params.pretrain #or os.path.isfile(params.reload_checkpoint)
             assert os.path.isfile(params.codes)
             params.model_name = "XLM"
     else :
