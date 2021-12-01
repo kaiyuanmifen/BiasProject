@@ -702,7 +702,7 @@ class Trainer(object):
                             word_scores, mlm_loss = self.pre_trainer.model('predict', tensor=tensor, pred_mask=pred_mask_, y=y_, get_scores=False)
 
                             y_hat = word_scores.max(1)[1]
-                            #if self.n_total_iter % self.log_interval != 0:
+                            #if self.n_total_iter % self.log_interval == 0:
                             #    input_ = y_to_sentence(x_, y_, lengths_, self.evaluator.dico, self.params)
                             #    generated = y_to_sentence(x_, y_hat, lengths_, self.evaluator.dico, self.params)
                             #    self.logger.info('mlm input : %s'%input_)
@@ -762,7 +762,7 @@ class Trainer(object):
                             word_scores, clm_loss = self.pre_trainer.model('predict', tensor=tensor, pred_mask=pred_mask_, y=y_, get_scores=False)
                             
                             y_hat = word_scores.max(1)[1]
-                            if self.n_total_iter % self.log_interval != 0:
+                            if self.n_total_iter % self.log_interval == 0:
                                 input_ = y_to_sentence(x_, y_, lengths_, self.evaluator.dico, self.params)
                                 generated = y_to_sentence(x_, y_hat, lengths_, self.evaluator.dico, self.params)
                                 self.logger.info('clm input : %s'%input_)
