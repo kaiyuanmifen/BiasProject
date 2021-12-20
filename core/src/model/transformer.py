@@ -391,7 +391,9 @@ class TransformerModel(nn.Module):
         else:
             raise Exception("Unknown mode: %s" % mode)
 
-    def fwd(self, x, lengths, causal, src_enc=None, src_len=None, positions=None, langs=None, cache=None):
+    def fwd(self, x, lengths, causal, src_enc=None, src_len=None, positions=None, langs=None, cache=None,
+            intermediate_states = False
+    ):
         """
         Inputs:
             `x` LongTensor(slen, bs), containing word indices
@@ -455,6 +457,8 @@ class TransformerModel(nn.Module):
             tensor *= mask.unsqueeze(-1).to(tensor.dtype)
         else :
             # transformer layers
+            states = []
+            states.append(tensor)
             i, j = 0, 0
             for k in range(self.n_layers):
                 if k in self.tim_layers_pos :
@@ -497,6 +501,7 @@ class TransformerModel(nn.Module):
                     i += 1
 
                 tensor *= mask.unsqueeze(-1).to(tensor.dtype)
+                states.append(tensor)
 
         # update cache length
         if cache is not None:
@@ -505,7 +510,7 @@ class TransformerModel(nn.Module):
         # move back sequence length to dimension 0
         tensor = tensor.transpose(0, 1)
 
-        return tensor
+        return tensor if not intermediate_states else (tensor, states)
 
     def predict(self, tensor, pred_mask, y, get_scores, reduction='mean'):
         """

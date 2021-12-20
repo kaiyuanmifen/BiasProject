@@ -111,6 +111,7 @@ def build_model(params, dico):
     """
     Build model.
     """
+    map_location = params.device if not torch.cuda.is_available() else lambda storage, loc: storage.cuda(params.local_rank)
     if params.encoder_only:
         # build
         model = TransformerModel(params, dico, is_encoder=True, with_output=True)
@@ -123,7 +124,7 @@ def build_model(params, dico):
         # reload a pretrained model
         if params.reload_model != '':
             logger.info("Reloading model from %s ..." % params.reload_model)
-            reloaded = torch.load(params.reload_model, map_location=lambda storage, loc: storage.cuda(params.local_rank))['model']
+            reloaded = torch.load(params.reload_model, map_location=map_location)['model']
             if all([k.startswith('module.') for k in reloaded.keys()]):
                 reloaded = {k[len('module.'):]: v for k, v in reloaded.items()}
 
@@ -161,7 +162,7 @@ def build_model(params, dico):
             # reload encoder
             if enc_path != '':
                 logger.info("Reloading encoder from %s ..." % enc_path)
-                enc_reload = torch.load(enc_path, map_location=lambda storage, loc: storage.cuda(params.local_rank))
+                enc_reload = torch.load(enc_path, map_location=map_location)
                 enc_reload = enc_reload['model' if 'model' in enc_reload else 'encoder']
                 if all([k.startswith('module.') for k in enc_reload.keys()]):
                     enc_reload = {k[len('module.'):]: v for k, v in enc_reload.items()}
@@ -170,7 +171,7 @@ def build_model(params, dico):
             # reload decoder
             if dec_path != '':
                 logger.info("Reloading decoder from %s ..." % dec_path)
-                dec_reload = torch.load(dec_path, map_location=lambda storage, loc: storage.cuda(params.local_rank))
+                dec_reload = torch.load(dec_path, map_location=map_location)
                 dec_reload = dec_reload['model' if 'model' in dec_reload else 'decoder']
                 if all([k.startswith('module.') for k in dec_reload.keys()]):
                     dec_reload = {k[len('module.'):]: v for k, v in dec_reload.items()}

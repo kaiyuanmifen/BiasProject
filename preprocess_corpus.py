@@ -22,6 +22,7 @@ import tqdm
 import argparse 
 
 import pandas as pd
+from pandas.io.parsers import ParserError
 from sklearn.model_selection import train_test_split
 
 import nltk
@@ -39,7 +40,10 @@ currency_symbol=[" replacewithcurrencysymbol ".upper(), " <cur> "]
 special_tokens = [url, email, phone_number, number, digit, currency_symbol]
 
 def path_leaf(path):
-    # https://stackoverflow.com/a/8384788/11814682
+    """
+    https://stackoverflow.com/a/8384788/11814682
+    https://stackoverflow.com/questions/8384737/extract-file-name-from-path-no-matter-what-the-os-path-format
+    """
     head, tail = ntpath.split(path)
     return tail or ntpath.basename(head)
 
@@ -202,6 +206,46 @@ def get_stat(corpus = None, stat = None, log = True):
         return s
     print(s)
 
+def get_path(file_item : str, extension : str, save_to : str = None):
+    file_name = path_leaf(path = file_item)
+    file_path = file_item.split(file_name)[0]
+    file_name, ext = os.path.splitext(file_name) 
+    if ext.replace(".", "") == extension :
+        file_name = file_name + "_" + ext.replace(".", "")
+    dest_file = "%s.%s"%(file_name, extension) 
+    if os.path.isfile(dest_file):
+        i = 1
+        while os.path.isfile("%s.%s.%s"%(file_name,str(i),extension)):
+            i += 1
+        dest_file = "%s.%s.%s"%(file_name,str(i),extension)
+    if save_to is not None :
+        return os.path.join(save_to, dest_file)
+    else :
+        return os.path.join(file_path, dest_file)
+    
+def csv2txt(file_list, text_column, txt_file : None):
+    if txt_file is None :
+        txt_file = [get_path(f, "txt") for f in file_list]
+        result = txt_file
+    else :
+        if type(txt_file) == str :
+            result = [txt_file]
+            txt_file = result * len(file_list)
+        elif type(txt_file) == list :
+            assert len(txt_file) == len(file_list)
+            result = [txt_file]
+    
+    for file_item, tfile in zip(file_list, txt_file):
+        with open(tfile, 'a') as f:
+            try :
+                df = pd.read_csv(file_item)
+            except ParserError : # https://stackoverflow.com/questions/33998740/error-in-reading-a-csv-file-in-pandascparsererror-error-tokenizing-data-c-err
+                df = pd.read_csv(file_item, lineterminator='\n')
+            for row in tqdm.tqdm(list(df.iterrows()), desc="%s" % file_item):
+                text = row[1][text_column].strip()
+                f.write("%s\n" % text)
+                
+    return result
 
 FALSY_STRINGS = {'off', 'false', '0'}
 TRUTHY_STRINGS = {'on', 'true', '1'}
