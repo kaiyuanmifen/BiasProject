@@ -24,6 +24,8 @@
     "data_columns":"",
     "n_labels":6,
     "version":"2",
+    "bce":"True",   
+    "kl_div":"False",
     "in_memory":"True",
     "do_augment":"False",
     "do_downsampling":"False",

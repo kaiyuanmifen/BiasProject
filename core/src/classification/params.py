@@ -52,7 +52,10 @@ def add_argument(parser) :
                                 5 : TODO \
                                 6 : TODO \
                                 7 : TODO')
-    
+
+    parser.add_argument("--bce", type=bool_flag, default=True, help="binary cross entropy with logits")
+    parser.add_argument("--kl_div", type=bool_flag, default=False, help="kl divergence loss")
+
     #if parser.parse_known_args()[0].version == 2:
     parser.add_argument("--log_softmax", type=bool_flag, default=True, 
                         help="use log_softmax in the loss function instead of log")

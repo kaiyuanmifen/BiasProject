@@ -391,6 +391,8 @@ config_dic = {
     "data_columns":[str, ""],
     "n_labels" : [int, 6],
     "version": [int, 1],
+    "bce":[bool, True],
+    "kl_div":[bool, False],
     "in_memory":[bool, True],
     "do_augment":[bool, False],
     "do_downsampling":[bool, False],

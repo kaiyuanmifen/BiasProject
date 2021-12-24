@@ -70,7 +70,7 @@ def to_bpe_py(sentences, codes : str,  vocab : str = ""):
     
     installation : pip install fastbpe
     """
-    return sentences
+    #return sentences
     import fastBPE
     #if not os.path.isfile(vocab) :
     #    vocab = ""

@@ -16,7 +16,7 @@ import nltk
 from nltk.translate.bleu_score import SmoothingFunction
 from bleu import list_bleu, multi_list_bleu
 
-from src.utils import to_cuda, restore_segmentation_py
+from src.utils import to_cuda, restore_segmentation_py, restore_segmentation
 from src.model.transformer import TransformerModel
 from src.optim import get_optimizer
 from src.evaluation.evaluator import convert_to_text, eval_moses_bleu
@@ -53,7 +53,7 @@ def write_text_z_in_file(output_file, text_z_prime) :
                 b1 = round(calc_bleu(source, before), 4)
                 b2 = round(calc_bleu(source, after), 4)
                 b3 = round(calc_bleu(before, after), 4)
-                f.writelines(["bleu --> input vs gen = %s, input vs deb = %s, gen vs deb = %s\n"%(b1, b2, b3)])
+                f.writelines([f"bleu --> {KEYS['input']} vs {KEYS['gen']} = %s, {KEYS['input']} vs {KEYS['deb']} = %s, {KEYS['gen']} vs {KEYS['deb']} = %s\n"%(b1, b2, b3)])
                 f.write("\n")
 
 class LossDebias:
@@ -101,13 +101,30 @@ class Debias_Trainer(Trainer) :
         #self.on_init(pretrain_params)
         self.deb_optimizer = get_optimizer(self.deb.parameters(), self.params.deb_optimizer)
         self.deb_criterion = LossDebias(penalty=self.params.penalty)
+        self.after_init()
 
-    def on_init(self, p_params):
+    def on_init(self, params, p_params):
+        dump_path = os.path.join(params.dump_path, "debias")
+        checkpoint_path = os.path.join(dump_path, "checkpoint.pth")
+        if os.path.isfile(checkpoint_path):
+            self.params.dump_path = dump_path
+            self.checkpoint_path = checkpoint_path
+            self.from_deb = True
+        else :
+            self.checkpoint_path = os.path.join(params.dump_path, "checkpoint.pth")
+            self.from_deb = False
         self.deb = TransformerModel(p_params, self.model.dico, is_encoder=True, 
                                     with_output = False, with_emb = False)
         #self.deb_optimizer = get_optimizer(self.deb.parameters(), self.params.deb_optimizer)
         #self.deb_criterion = LossDebias(penalty=self.params.penalty)
 
+    def after_init(self) :
+        self.params.dump_path = os.path.join(self.params.dump_path, "debias")
+        os.makedirs(self.params.dump_path, exist_ok=True)
+        self.checkpoint_path = os.path.join(self.params.dump_path, "checkpoint.pth")
+        #self.model.embedder.model = self.pre_trainer.encoder
+        #self.pre_trainer.encoder = self.model.embedder.model
+        
     def classif_step(self, get_loss, y, batch):
         (x, lengths, langs), _, _, weight_out = batch
         z, z_list = self.pre_trainer.encoder('fwd', x=x, lengths=lengths, langs=langs, 
@@ -237,7 +254,8 @@ class Debias_Trainer(Trainer) :
             if flag :    
                 y = y2 if self.params.version == 3 else y1
                 x, y, lengths, langs = to_cuda(x, y, lengths, langs)
-                langs = langs if self.params.n_langs > 1 else None
+                #langs = langs if self.params.n_langs > 1 else None
+                langs = None
                 batch = (x, lengths, langs), y1, y2, weight_out
                 classif_loss, logits, z, z_list, stats, y_hat = self.classif_step(get_loss, y, batch)
                 self.optimize(classif_loss, retain_graph = True)
@@ -248,8 +266,8 @@ class Debias_Trainer(Trainer) :
                 z = z.transpose(0, 1) # (bs-ϵ, seq_len, dim)
                 bs = z.size(0)
                 flag = mask_deb.any()
-                loss_deb = torch.tensor(float("nan"))
-                loss_rec = torch.tensor(float("nan"))
+                loss_deb = 0 # torch.tensor(float("nan"))
+                loss_rec = 0 # torch.tensor(float("nan"))
                 if flag :  # if f(z) > lambda :
                     loss_deb, _, _ = self.debias_step(logits, lengths, z, z_list, mask_deb, bs)
                 if non_mask_deb.any() : # else :
@@ -279,8 +297,8 @@ class Debias_Trainer(Trainer) :
                 self.pre_trainer.optimize(loss)  
                 stats_["loss_"] = loss.item() 
 
-                if True :
-                #if self.n_total_iter % self.log_interval == 0 :
+                #if True :
+                if self.n_total_iter % self.log_interval == 0 :
                     try :
                         # TODO
                         self.generate(x, lengths, z)
@@ -323,7 +341,7 @@ class Debias_Trainer(Trainer) :
                 # only on negative example
                 flag = True
                 #negative_examples = ~(y2.squeeze() < self.params.threshold)
-                """
+                #"""
                 negative_examples = y2.squeeze() > self.params.threshold
                 x = x[:,negative_examples] # (seq_len, bs-ϵ)
                 lengths = lengths[negative_examples]
@@ -331,15 +349,14 @@ class Debias_Trainer(Trainer) :
                 y2 = y2[negative_examples]
                 weight_out = weight_out[negative_examples]
                 flag = negative_examples.any()
-                """
+                #"""
                 if flag :    
                     y = y2 if self.params.version == 3 else y1
                     x, y, lengths, langs = to_cuda(x, y, lengths, langs)
-                    langs = langs if self.params.n_langs > 1 else None
+                    #langs = langs if self.params.n_langs > 1 else None
+                    langs = None
                     batch = (x, lengths, langs), y1, y2, weight_out
                     _, _, z, _, stats, y_hat = self.classif_step(get_loss, y, batch)
-                    text_z_prime["origin_labels"].append(y2.cpu().numpy())
-                    text_z_prime["pred_label"].append(y_hat.cpu().numpy())
                     z = z.transpose(0, 1) # (bs-ϵ, seq_len, dim)
                     bs = z.size(0)
 
@@ -357,20 +374,25 @@ class Debias_Trainer(Trainer) :
                     n_words = n_words+eps
                     stats['rec_ppl'] = np.exp(xe_loss / n_words)
                     stats['rec_acc'] = 100. * n_valid / n_words
-                                      
-                    texts=self.generate(x, lengths, z, z_prime = z_prime, log = False)
-                    for k, v in texts.items():
-                        text_z_prime[k].append(v)
-                    refences.extend(texts[KEYS["input"]])
-                    hypothesis.extend(texts[KEYS["gen"]])
+                    try :            
+                        texts=self.generate(x, lengths, z, z_prime = z_prime, log = False)
+                        for k, v in texts.items():
+                            text_z_prime[k].append(v)
+                        refences.extend(texts[KEYS["input"]])
+                        hypothesis.extend(texts[KEYS["gen"]])
+                        text_z_prime["origin_labels"].append(y2.cpu().numpy())
+                        text_z_prime["pred_label"].append(y_hat.cpu().numpy())
+                    except AssertionError :
+                        pass
                 
-                total_stats.append(stats)
+                    total_stats.append(stats)
 
         output_file, i = "output", 1
         while os.path.isfile(os.path.join(self.params.dump_path, output_file+str(i)+'.txt')):
             i += 1
         output_file = os.path.join(self.params.dump_path, output_file+str(i)+'.txt')
         write_text_z_in_file(output_file, text_z_prime)
+        restore_segmentation(output_file)
 
         # compute BLEU
         eval_bleu = True
@@ -435,9 +457,15 @@ class Debias_Trainer(Trainer) :
         
     def load_checkpoint(self, checkpoint_path=None, do_print = True):
         data, rcc = super().load_checkpoint(checkpoint_path=checkpoint_path, do_print = False)
-        self.deb.load_state_dict(data["deb"])
-        for name in self.pre_trainer.MODEL_NAMES:
-            getattr(self.pre_trainer, name).load_state_dict(data[name])
+        if self.from_deb :
+            self.deb.load_state_dict(data["deb"])
+            for name in self.pre_trainer.MODEL_NAMES:
+                getattr(self.pre_trainer, name).load_state_dict(data[name])
+
+            self.epoch = data['epoch'] + 1
+            self.n_total_iter = data['n_total_iter']
+            self.best_metrics = data['best_metrics']
+            self.best_criterion = data['best_criterion']
         if not self.params.eval_only :
             if rcc :
                 self.logger.warning(f"Checkpoint reloaded. Resuming at epoch {self.epoch} / iteration {self.n_total_iter} ...")

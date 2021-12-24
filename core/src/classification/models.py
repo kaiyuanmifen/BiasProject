@@ -161,15 +161,12 @@ class PredLayer4Classification(nn.Module):
             )
         
         else :
-            self.bce = False
-            self.kl_div = False
+            self.bce = params.bce
+            self.kl_div = params.kl_div
             if criterion is not None :
                 self.criterion = criterion
             else :
-                assert not (self.bce and self.kl_div)
                 if params.version in [2, 4] :
-                    self.bce = True
-                    self.kl_div = False
                     assert not (self.bce and self.kl_div)
                     if self.bce :
                         #self.criterion = nn.BCEWithLogitsLoss().to(params.device)

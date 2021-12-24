@@ -268,11 +268,10 @@ class Trainer(object):
             self.log_interval = self.params.batch_size
         assert self.log_interval > 0 or params.eval_only
 
-        self.on_init(p_params)
+        self.on_init(params, p_params)
         if params.reload_checkpoint :
             self.load_checkpoint(checkpoint_path = params.reload_checkpoint)        
 
-        self.checkpoint_path = os.path.join(params.dump_path, "checkpoint.pth")
         if os.path.isfile(self.checkpoint_path) :
             # sometime : RuntimeError: [enforce fail at inline_container.cc:145] . PytorchStreamReader failed reading zip archive: failed finding central directory
             self.load_checkpoint()
@@ -300,8 +299,8 @@ class Trainer(object):
                 import apex
                 self.model = apex.parallel.DistributedDataParallel(self.model, delay_allreduce=True)
 
-    def on_init(self, p_params):
-        pass
+    def on_init(self, params, p_params):
+        self.checkpoint_path = os.path.join(params.dump_path, "checkpoint.pth")
 
     def init_amp(self):
         """
@@ -489,10 +488,11 @@ class Trainer(object):
                             param_group['lr'] = optimizer.get_lr_for_step(param_group['num_updates'])
 
             # reload main metrics
-            self.epoch = data['epoch'] + 1
-            self.n_total_iter = data['n_total_iter']
-            self.best_metrics = data['best_metrics']
-            self.best_criterion = data['best_criterion']
+            if do_print :
+                self.epoch = data['epoch'] + 1
+                self.n_total_iter = data['n_total_iter']
+                self.best_metrics = data['best_metrics']
+                self.best_criterion = data['best_criterion']
             
             if 'all_scores' in data :
                 self.all_scores = data['all_scores']
