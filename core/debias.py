@@ -332,7 +332,7 @@ class Debias_Trainer(Trainer) :
                         "origin_labels" : [], "pred_label" : []}
         refences = []
         hypothesis = []
-
+        hypothesis2 = []
         with torch.no_grad(): 
             for batch in tqdm(self.val_data_iter, desc='val'):
                 n_words, xe_loss, n_valid = 0, 0, 0
@@ -380,6 +380,7 @@ class Debias_Trainer(Trainer) :
                             text_z_prime[k].append(v)
                         refences.extend(texts[KEYS["input"]])
                         hypothesis.extend(texts[KEYS["gen"]])
+                        hypothesis2.extend(texts[KEYS["deb"]])
                         text_z_prime["origin_labels"].append(y2.cpu().numpy())
                         text_z_prime["pred_label"].append(y_hat.cpu().numpy())
                     except AssertionError :
@@ -396,7 +397,7 @@ class Debias_Trainer(Trainer) :
 
         # compute BLEU
         eval_bleu = True
-        if eval_bleu:
+        if eval_bleu and refences:
             if False :
                 bleu = multi_list_bleu(refences, hypothesis)
                 self.bleu = sum(bleu) / len(bleu)
@@ -406,21 +407,29 @@ class Debias_Trainer(Trainer) :
                 hyp_name, ref_name, i ="hyp", "ref", 1
                 while os.path.isfile(os.path.join(self.params.dump_path, hyp_name+str(i)+'.txt')):
                     i += 1
-                hyp_path = os.path.join(self.params.dump_path, hyp_name+str(i)+'.txt')
                 ref_path = os.path.join(self.params.dump_path, ref_name+str(i)+'.txt')
+                hyp_path = os.path.join(self.params.dump_path, hyp_name+str(i)+'.txt')
+                hyp_path2 = os.path.join(self.params.dump_path, hyp_name+'_deb' +str(i)+'.txt')
 
                 # export sentences to reference and hypothesis file
                 with open(ref_path, 'w', encoding='utf-8') as f:
                     f.write('\n'.join(refences) + '\n') 
                 with open(hyp_path, 'w', encoding='utf-8') as f:
                     f.write('\n'.join(hypothesis) + '\n')
-
-                #restore_segmentation(hyp_path)
-                #restore_segmentation(ref_path)
+                with open(hyp_path2, 'w', encoding='utf-8') as f:
+                    f.write('\n'.join(hypothesis2) + '\n')
+                
+                restore_segmentation(ref_path)
+                restore_segmentation(hyp_path)
+                restore_segmentation(hyp_path2)
 
                 # evaluate BLEU score
                 self.bleu = eval_moses_bleu(ref_path, hyp_path)
-                self.logger.info("BLEU %s %s : %f" % (hyp_path, ref_path, self.bleu))
+                self.logger.info("BLEU input-gen %s %s : %f" % (hyp_path, ref_path, self.bleu))
+                bleu = eval_moses_bleu(ref_path, hyp_path2)
+                self.logger.info("BLEU input-deb %s %s : %f" % (hyp_path2, ref_path, bleu))
+                bleu = eval_moses_bleu(hyp_path, hyp_path2)
+                self.logger.info("BLEU gen-deb %s %s : %f" % (hyp_path, hyp_path2, bleu))
         if test :
             pre_train_scores = {}
             return total_stats, pre_train_scores
