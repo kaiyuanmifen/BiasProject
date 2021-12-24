@@ -162,6 +162,18 @@ def restore_segmentation(path):
     restore_cmd = "sed -i -r 's/(@@ )|(@@ ?$)//g' %s"
     subprocess.Popen(restore_cmd % path, shell=True).wait()
 
+def restore_segmentation_py(text):
+    """
+    Take a text segmented with BPE and restore it to its original segmentation.
+    https://www.gnu.org/software/sed/manual/sed.html
+    """
+    if type(text) == str :
+        text = [text]
+    delimitor = " __DEL__ "
+    restore_cmd = "printf '%s' | sed -r 's/(@@ )|(@@ ?$)//g' -" % delimitor.join(text)
+    process = subprocess.Popen(restore_cmd, stdout=subprocess.PIPE, shell=True)
+    stdoutdata, _ = process.communicate()
+    return text if process.returncode != 0 else stdoutdata.decode("utf-8").split(delimitor.strip())
 
 def parse_lambda_config(params):
     """

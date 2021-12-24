@@ -23,7 +23,7 @@ from src.classification.params import add_argument, check_parameters
 
 from params import get_parser, from_config_file
     
-def main(params, params_pretrain):
+def main(params, params_pretrain, trainer_class):
 
     # initialize the multi-GPU / multi-node training
     init_distributed_mode(params)
@@ -52,10 +52,10 @@ def main(params, params_pretrain):
     optimizers = model.get_optimizers(params) if not params.eval_only else []
         
     # Trainer
-    trainer = Trainer(params, model, optimizers, train_dataset, val_dataset, logger, pre_trainer, evaluator)
+    trainer = trainer_class(params_pretrain, params, model, optimizers, train_dataset, val_dataset, logger, pre_trainer, evaluator)
     
     if params.pretrain :
-        assert id(trainer.model.embedder.model) == id(pre_trainer.model)
+        assert id(trainer.model.embedder.model) == id(getattr(pre_trainer, params.reload_key))
     
     # Run train/evaluation
     logger.info("")
@@ -63,9 +63,8 @@ def main(params, params_pretrain):
         trainer.train(get_loss, end_of_epoch)
     else :
         trainer.eval(get_loss, end_of_epoch)
-        
-if __name__ == '__main__':
 
+def __clf__main__(trainer_class = Trainer): 
     # generate parser / parse parameters
     parser = get_parser()
     parser = add_argument(parser)
@@ -89,5 +88,7 @@ if __name__ == '__main__':
     check_parameters(params)
     
     # run experiment
-    main(params, params_pretrain)
-    
+    main(params, params_pretrain, trainer_class = trainer_class)
+
+if __name__ == '__main__':
+    __clf__main__()

@@ -253,7 +253,7 @@ class TransformerModel(nn.Module):
 
     ATTRIBUTES = ['encoder', 'with_output', 'eos_index', 'pad_index', 'n_langs', 'n_words', 'dim', 'n_layers', 'n_heads', 'hidden_dim', 'dropout', 'attention_dropout', 'asm', 'asm_cutoffs', 'asm_div_value']
 
-    def __init__(self, params, dico, is_encoder, with_output):
+    def __init__(self, params, dico, is_encoder, with_output, with_emb = True):
         """
         Transformer model (encoder or decoder).
         """
@@ -305,13 +305,15 @@ class TransformerModel(nn.Module):
                     assert self.H == self.H_c
 
         # embeddings
-        self.position_embeddings = Embedding(N_MAX_POSITIONS, self.dim)
-        if params.sinusoidal_embeddings:
-            create_sinusoidal_embeddings(N_MAX_POSITIONS, self.dim, out=self.position_embeddings.weight)
-        if params.n_langs > 1 and self.use_lang_emb:
-            self.lang_embeddings = Embedding(self.n_langs, self.dim)
-        self.embeddings = Embedding(self.n_words, self.dim, padding_idx=self.pad_index)
-        self.layer_norm_emb = nn.LayerNorm(self.dim, eps=1e-12)
+        self.with_emb = with_emb
+        if with_emb :
+            self.position_embeddings = Embedding(N_MAX_POSITIONS, self.dim)
+            if params.sinusoidal_embeddings:
+                create_sinusoidal_embeddings(N_MAX_POSITIONS, self.dim, out=self.position_embeddings.weight)
+            if params.n_langs > 1 and self.use_lang_emb:
+                self.lang_embeddings = Embedding(self.n_langs, self.dim)
+            self.embeddings = Embedding(self.n_words, self.dim, padding_idx=self.pad_index)
+            self.layer_norm_emb = nn.LayerNorm(self.dim, eps=1e-12)
 
         if getattr(params, "simple_model", "") :
             #self.backbone = build_model(params, logger, pre_trainer = None)
@@ -404,53 +406,59 @@ class TransformerModel(nn.Module):
         """
         # lengths = (x != self.pad_index).float().sum(dim=1)
         # mask = x != self.pad_index
+        if self.with_emb :
+            # check inputs
+            slen, bs = x.size()
+            assert lengths.size(0) == bs
+            assert lengths.max().item() <= slen
+            x = x.transpose(0, 1)  # batch size as dimension 0
+            assert (src_enc is None) == (src_len is None)
+            if src_enc is not None:
+                assert self.is_decoder
+                assert src_enc.size(0) == bs
 
-        # check inputs
-        slen, bs = x.size()
-        assert lengths.size(0) == bs
-        assert lengths.max().item() <= slen
-        x = x.transpose(0, 1)  # batch size as dimension 0
-        assert (src_enc is None) == (src_len is None)
-        if src_enc is not None:
-            assert self.is_decoder
-            assert src_enc.size(0) == bs
+            # generate masks
+            mask, attn_mask = get_masks(slen, lengths, causal)
+            if self.is_decoder and src_enc is not None:
+                src_mask = torch.arange(src_len.max(), dtype=torch.long, device=lengths.device) < src_len[:, None]
 
-        # generate masks
-        mask, attn_mask = get_masks(slen, lengths, causal)
-        if self.is_decoder and src_enc is not None:
-            src_mask = torch.arange(src_len.max(), dtype=torch.long, device=lengths.device) < src_len[:, None]
+            # positions
+            if positions is None:
+                positions = x.new(slen).long()
+                positions = torch.arange(slen, out=positions).unsqueeze(0)
+            else:
+                assert positions.size() == (slen, bs)
+                positions = positions.transpose(0, 1)
 
-        # positions
-        if positions is None:
-            positions = x.new(slen).long()
-            positions = torch.arange(slen, out=positions).unsqueeze(0)
-        else:
-            assert positions.size() == (slen, bs)
-            positions = positions.transpose(0, 1)
-
-        # langs
-        if langs is not None:
-            assert langs.size() == (slen, bs)
-            langs = langs.transpose(0, 1)
-
-        # do not recompute cached elements
-        if cache is not None:
-            _slen = slen - cache['slen']
-            x = x[:, -_slen:]
-            positions = positions[:, -_slen:]
+            # langs
             if langs is not None:
-                langs = langs[:, -_slen:]
-            mask = mask[:, -_slen:]
-            attn_mask = attn_mask[:, -_slen:]
+                assert langs.size() == (slen, bs)
+                langs = langs.transpose(0, 1)
 
-        # embeddings
-        tensor = self.embeddings(x)
-        tensor = tensor + self.position_embeddings(positions).expand_as(tensor)
-        if langs is not None and self.use_lang_emb:
-            tensor = tensor + self.lang_embeddings(langs)
-        tensor = self.layer_norm_emb(tensor)
-        tensor = F.dropout(tensor, p=self.dropout, training=self.training)
-        tensor *= mask.unsqueeze(-1).to(tensor.dtype)
+            # do not recompute cached elements
+            if cache is not None:
+                _slen = slen - cache['slen']
+                x = x[:, -_slen:]
+                positions = positions[:, -_slen:]
+                if langs is not None:
+                    langs = langs[:, -_slen:]
+                mask = mask[:, -_slen:]
+                attn_mask = attn_mask[:, -_slen:]
+
+            # embeddings
+            tensor = self.embeddings(x)
+            tensor = tensor + self.position_embeddings(positions).expand_as(tensor)
+            if langs is not None and self.use_lang_emb:
+                tensor = tensor + self.lang_embeddings(langs)
+            tensor = self.layer_norm_emb(tensor)
+            tensor = F.dropout(tensor, p=self.dropout, training=self.training)
+            tensor *= mask.unsqueeze(-1).to(tensor.dtype)
+        else :
+            # x : (bs, seq_len, dim)
+            slen = x.size(1)
+            #lengths = torch.LongTensor([slen]*bs)
+            mask, attn_mask = get_masks(slen, lengths, causal)
+            tensor = x
         
         if getattr(self, 'backbone', None) is not None :
             tensor = self.backbone.fwd(tensor, lengths, mask)

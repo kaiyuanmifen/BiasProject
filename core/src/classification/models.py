@@ -410,7 +410,7 @@ class XLMBertClassifier(nn.Module):
             logger.warning("Reload dico & transformer model path from %s"%params.model_path)
             reloaded = torch.load(params.model_path, map_location=params.device)
             pretrain_params = AttrDict(reloaded['params'])
-            logger.info("Supported languages: %s" % ", ".join(pretrain_params.lang2id.keys()))
+            logger.info("Supported languages: %s" % ", ".join(getattr(pretrain_params, "lang2id", {}).keys()))
 
             # build dictionary / build encoder / build decoder / reload weights
             try :
@@ -459,8 +459,11 @@ class XLMBertClassifier(nn.Module):
                 setattr(pretrain_params, "tim_layers_pos", params.tim_layers_pos)
                 # ...
                 model = TransformerModel(pretrain_params, dico, is_encoder=True, with_output=True).to(params.device)
-                
-            state_dict = reloaded['model']
+
+
+            #params.reload_key = "model"    
+            state_dict = reloaded[params.reload_key]
+            
             # handle models from multi-GPU checkpoints
             if 'checkpoint' in params.model_path:
                 state_dict = {(k[7:] if k.startswith('module.') else k): v for k, v in state_dict.items()}
@@ -481,7 +484,11 @@ class XLMBertClassifier(nn.Module):
             #params.id2lang = embedder.pretrain_params['id2lang']
             #params.lang2id = embedder.pretrain_params['lang2id']
             params.lang = params.lgs
-            params.lang_id = pretrain_params.lang2id[params.lang]
+            try :
+                params.lang_id = pretrain_params.lang2id[params.lang]
+            except KeyError :
+                params.lang_id = 0
+                params.n_langs = 0
             
             params.freeze_transformer = params.finetune_layers == ""    
             if params.freeze_transformer :
@@ -492,14 +499,20 @@ class XLMBertClassifier(nn.Module):
             self.dico = pre_trainer.data["dico"]
             for name in ['n_words', 'bos_index', 'eos_index', 'pad_index', 'unk_index', 'mask_index']+['lang2id', 'n_langs']:
                 setattr(params, name, getattr(pre_trainer.params, name))
-                
-            self.embedder = SentenceEmbedder(pre_trainer.model, self.dico,  pre_trainer.params)
-            d_model = pre_trainer.model.dim
+            
+            p_model = getattr(pre_trainer, params.reload_key)
+            self.embedder = SentenceEmbedder(p_model, self.dico,  pre_trainer.params)
+            d_model = p_model.dim
             if type(params.lgs) == list :
                 params.lang = params.lgs[0]
             else :
                 params.lang = params.lgs
-            params.lang_id = params.lang2id[params.lang]
+            try :
+                params.lang_id = params.lang2id[params.lang]
+            except KeyError :
+                params.lang_id = 0
+                params.n_langs = 0
+
             params.freeze_transformer = True
             params.finetune_layers == ""
             

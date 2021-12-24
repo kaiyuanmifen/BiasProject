@@ -196,6 +196,15 @@ class SentenceEmbedder(object):
 
         return parameters
 
+    def __call__(self, *args, **kwds):
+        return self.model(*args, **kwds)
+    
+    def forward(self, *args, **kwds):
+        return self.model.fwd(*args, **kwds)
+
+    def predict(self, *args, **kwds):
+        return self.model.predict(*args, **kwds)
+
     def get_embeddings(self, x, lengths, positions=None, langs=None, whole_output = False):
         """
         Inputs:
@@ -214,3 +223,4 @@ class SentenceEmbedder(object):
 
         # single-vector sentence representation (first column of last layer)
         return tensor[0] if not whole_output else tensor
+

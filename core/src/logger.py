@@ -27,7 +27,6 @@ class LogFormatter():
         message = message.replace('\n', '\n' + ' ' * (len(prefix) + 3))
         return "%s - %s" % (prefix, message) if message else ''
 
-
 def create_logger(filepath, rank):
     """
     Create a logger.

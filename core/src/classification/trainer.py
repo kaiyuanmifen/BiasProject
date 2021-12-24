@@ -30,7 +30,7 @@ import json
 #############
 
 from .utils import path_leaf
-from ..utils import to_cuda
+from ..utils import to_cuda, restore_segmentation_py
 from .. import one_step, end_of_epoch as pretrainer_eoe
 from ..evaluation.evaluator import convert_to_text
 
@@ -192,7 +192,7 @@ def y_to_sentence(x, y, lengths, dico, params) :
 
 class Trainer(object):
     """Training Helper Class"""
-    def __init__(self, params, model, optimizers, train_data_iter, val_data_iter, logger, pre_trainer = None, evaluator = None):
+    def __init__(self, p_params, params, model, optimizers, train_data_iter, val_data_iter, logger, pre_trainer = None, evaluator = None):
         self.params = params
         self.model = model
         self.optimizers = optimizers # optim
@@ -268,6 +268,7 @@ class Trainer(object):
             self.log_interval = self.params.batch_size
         assert self.log_interval > 0 or params.eval_only
 
+        self.on_init(p_params)
         if params.reload_checkpoint :
             self.load_checkpoint(checkpoint_path = params.reload_checkpoint)        
 
@@ -298,6 +299,9 @@ class Trainer(object):
                 self.logger.info("Using apex.parallel.DistributedDataParallel ...")
                 import apex
                 self.model = apex.parallel.DistributedDataParallel(self.model, delay_allreduce=True)
+
+    def on_init(self, p_params):
+        pass
 
     def init_amp(self):
         """
@@ -404,7 +408,8 @@ class Trainer(object):
                 self.logger.info('New best score for %s: %.6f' % (metric, scores[metric]))
                 self.save_checkpoint('best_%s' % metric, include_optimizer=False)
 
-    def save_checkpoint(self, name, include_optimizer = True, include_all_scores=False):
+    def save_checkpoint(self, name, include_optimizer = True, include_all_scores=False, 
+                        do_save = True):
         """
         Save the model / checkpoints.
         """
@@ -433,9 +438,12 @@ class Trainer(object):
             score_path = os.path.join(self.params.dump_path, 'all_scores.pth')
             torch.save(self.all_scores, score_path)
 
-        torch.save(data, checkpoint_path)
+        if do_save :
+            torch.save(data, checkpoint_path)
+        else :
+            return data, checkpoint_path
 
-    def load_checkpoint(self, checkpoint_path = None):
+    def load_checkpoint(self, checkpoint_path = None, do_print = True):
         """
         Reload a checkpoint if we find one.
         """
@@ -492,10 +500,13 @@ class Trainer(object):
                 #if os.path.isfile(score_path) :
                 #    self.all_scores = torch.load(score_path)
             
-            if reloading_checkpoint_condition :
-                self.logger.warning(f"Checkpoint reloaded. Resuming at epoch {self.epoch} / iteration {self.n_total_iter} ...")
-            else :
-                self.logger.warning(f"Parameters reloaded. Epoch {self.epoch} / iteration {self.n_total_iter} ...")
+            if do_print :
+                if reloading_checkpoint_condition :
+                    self.logger.warning(f"Checkpoint reloaded. Resuming at epoch {self.epoch} / iteration {self.n_total_iter} ...")
+                else :
+                    self.logger.warning(f"Parameters reloaded. Epoch {self.epoch} / iteration {self.n_total_iter} ...")
+        
+        return data, reloading_checkpoint_condition
 
     def save_periodic(self):
         """
@@ -599,6 +610,11 @@ class Trainer(object):
         self.logger.info(s_iter + progress + s_speed)
         self.logger.info(s_stat + s_lr)
 
+    def put_in_stats(self, stats):
+        for name in stats.keys() :
+            if ("loss" in name or 'ppl' in name or 'acc' in name or "f1_score" in name or "IoU" in name or "MCC" in name) and not "top" in name:
+                self.stats[name] = self.stats.get(name, []) + [stats[name]]
+
     def classif_step(self, get_loss, batch, total_stats, i) :
         # forward / loss
         loss, stats = get_loss(self.model, batch, self.params, self.train_data_iter.weights, mode="train", epoch = self.epoch)
@@ -615,9 +631,7 @@ class Trainer(object):
         self.stats['processed_w'] += stats['n_words']
         self.stats['progress'] = min(int(((i+1)/self.params.train_num_step)*100), 100) 
 
-        for name in stats.keys() :
-            if ("loss" in name or "ppl" in name or 'acc' in name or "f1_score" in name or "IoU" in name or "MCC" in name) and not "top" in name:
-                self.stats[name] = self.stats.get(name, []) + [stats[name]]
+        self.put_in_stats(stats)
 
         self.iter()
         self.print_stats()
@@ -703,10 +717,11 @@ class Trainer(object):
 
                             y_hat = word_scores.max(1)[1]
                             #if self.n_total_iter % self.log_interval == 0:
+                            #    # TODO
                             #    input_ = y_to_sentence(x_, y_, lengths_, self.evaluator.dico, self.params)
                             #    generated = y_to_sentence(x_, y_hat, lengths_, self.evaluator.dico, self.params)
-                            #    self.logger.info('mlm input : %s'%input_)
-                            #    self.logger.info('mlm gen : %s'%generated)
+                            #    self.logger.info('mlm input : %s'%restore_segmentation_py(input_))
+                            #    self.logger.info('mlm gen : %s'%restore_segmentation_py(generated))
 
                             # update stats
                             n_words = y_.size(0)
@@ -765,8 +780,8 @@ class Trainer(object):
                             if self.n_total_iter % self.log_interval == 0:
                                 input_ = y_to_sentence(x_, y_, lengths_, self.evaluator.dico, self.params)
                                 generated = y_to_sentence(x_, y_hat, lengths_, self.evaluator.dico, self.params)
-                                self.logger.info('clm input : %s'%input_)
-                                self.logger.info('clm gen : %s'%generated)
+                                self.logger.info('clm input : %s'%restore_segmentation_py(input_))
+                                self.logger.info('clm gen : %s'%restore_segmentation_py(generated))
 
                             # update stats
                             n_words = y_.size(0)
@@ -832,9 +847,7 @@ class Trainer(object):
             self.stats['processed_w'] += stats['n_words']
             self.stats['progress'] = min(int(((i+1)/self.params.train_num_step)*100), 100) 
 
-            for name in stats.keys() :
-                if ("loss" in name or 'ppl' in name or 'acc' in name or "f1_score" in name or "IoU" in name or "MCC" in name) and not "top" in name:
-                    self.stats[name] = self.stats.get(name, []) + [stats[name]]
+            self.put_in_stats(stats)
 
             self.iter()
             self.print_stats()
@@ -1051,6 +1064,8 @@ class Trainer(object):
             # TODO
             self.do_mlm = self.pre_trainer.params.mlm_steps != []
             self.do_clm = self.pre_trainer.params.clm_steps != []
+        else :
+            self.do_mlm, self.do_clm = False, False
         self.sedat = self.params.sedat
         #assert self.do_mlm + self.sedat != 2
         
@@ -1083,29 +1098,35 @@ class Trainer(object):
                 pre_train_scores["epoch"] = self.epoch
             else :
                 val_stats = self.eval_step(get_loss, test = False, prefix ="valid_")
-                if self.params.pretrain :
+                if self.params.pretrain and getattr(self.params, 'eval_pretrainer', True) :
                     pre_train_scores = pretrainer_eoe(self.pre_trainer.params, trainer = self.pre_trainer, evaluator = self.evaluator, end = False)
                 else :
                     pre_train_scores = {}
-                
-            scores = end_of_epoch([val_stats, train_stats], self.params)
-            
+            try :    
+                scores = end_of_epoch([val_stats, train_stats], self.params)
+                do_end = True
+            except KeyError : # loss, ...
+                scores = {}
+                do_end = False
+
             s = {**scores, **pre_train_scores}
             self.all_scores.append(s)
             
             self.plot_score(scores)
-
+            
             # end of epoch
-            if self.params.pretrain :
+            if self.params.pretrain and getattr(self.params, 'eval_pretrainer', True) :
+                pre_train_scores = getattr(self, "modify_pretrainer_score", lambda x : x)(pre_train_scores)
                 pretrainer_eoe(self.pre_trainer.params, logger = self.logger, trainer = self.pre_trainer, scores = pre_train_scores)
 
             self.save_best_model(s)
             self.save_periodic()
-            self.end_epoch(s)
+            if do_end :
+                self.end_epoch(s)
             
             self.logger.info("============ garbage collector collecting %d ..." % gc.collect())
             
-        plot_all_scores(self.all_scores)
+        #plot_all_scores(self.all_scores)
         
     def eval(self, get_loss, end_of_epoch):
         """ Eval Loop """
@@ -1136,16 +1157,17 @@ class Trainer(object):
         torch.save(predictions, predictions_path)
         
         self.plot_score(s)
-    
-def plot_all_scores(scores=None, from_path="") :
+
+def plot_all_scores(scores=None, from_path="",
+    to_plot = ['loss', 'acc', 'f1_score_weighted', 'IoU_weighted'],
+    prefix = ['train', 'val']    
+    ) :
     assert scores is not None or os.path.isfile(from_path)
     if scores is None :
         scores = torch.load(from_path)
         if "all_scores" in scores :
             scores = scores["all_scores"]
 
-    to_plot = ['loss', 'acc', 'f1_score_weighted', 'IoU_weighted']
-    prefix = ['train', 'val']
     suptitle=""
     k = 0
     if True :

@@ -260,7 +260,6 @@ def get_stats(logits, y, params, inclure_pred=True, include_avg=True):
             stats["top%d_avg_MCC"%k] = mcc
         if inclure_pred :
             stats["top%d_label_pred"%k] = y_pred
-        
     acc = get_acc(label_pred, label_id)
     f1 = f1_score_func(label_pred, label_id)
     iou = iou_func(label_pred, label_id)
@@ -344,27 +343,27 @@ def get_score(collect, prefix, params, inv="", add_output = False) :
         scores["fake_top%d_%s_f1_score_weighted"%(k, prefix)] = f1_score_func(label_pred_topK[k], label_id)
         scores["fake_top%d_%s_IoU_weighted"%(k, prefix)] = iou_func(label_pred_topK[k], label_id)
         scores["fake_top%d_%s_MCC"%(k, prefix)] = mcc_func(label_pred_topK[k], label_id)
-        
-    report = classification_report(y_true = label_id, y_pred = label_pred, digits=4, output_dict=True, zero_division=0)
-        
-    m_v = {'precision': [], 'recall': [], 'f1-score':[]}
-    if True :
-        for k in report :
-            if k in list(range(params.n_labels)) :
-                v = report.get(k, None)
-                for k1 in m_v.keys():
-                    m_v[k1] = m_v.get(k1, []) + [v[k1]]
-                scores["%s_class_%s"%(prefix, k)] = v
-            else :
-                scores["%s_%s"%(prefix, k)] = report.get(k, None)
-            
-        # AP
-        for k in m_v.keys():
-            v = m_v.get(k, [0.0])
-            l = len(v)
-            #l = l if l != 0 else 1
-            if l != 0 :
-                scores["%s_mean_average_%s"%(prefix, k)] = sum(v) / l*100
+    try :
+        report = classification_report(y_true = label_id, y_pred = label_pred, digits=4, output_dict=True, zero_division=0)
+        m_v = {'precision': [], 'recall': [], 'f1-score':[]}
+        if True :
+            for k in report :
+                if k in list(range(params.n_labels)) :
+                    v = report.get(k, None)
+                    for k1 in m_v.keys():
+                        m_v[k1] = m_v.get(k1, []) + [v[k1]]
+                    scores["%s_class_%s"%(prefix, k)] = v
+                else :
+                    scores["%s_%s"%(prefix, k)] = report.get(k, None)               
+            # AP
+            for k in m_v.keys():
+                v = m_v.get(k, [0.0])
+                l = len(v)
+                #l = l if l != 0 else 1
+                if l != 0 :
+                    scores["%s_mean_average_%s"%(prefix, k)] = sum(v) / l*100
+    except AttributeError: #'float' object has no attribute 'item'
+        pass
     
     y2 = torch.cat(collect["%sy2"%inv], dim=0)
     logits = torch.cat(collect["%slogits"%inv], dim=0)

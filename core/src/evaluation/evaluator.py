@@ -7,6 +7,7 @@
 
 from logging import getLogger
 import os
+import stat
 import subprocess
 from collections import OrderedDict
 import numpy as np
@@ -750,6 +751,10 @@ class EncDecEvaluator(Evaluator):
         # store hypothesis to compute BLEU score
         if eval_bleu:
             hypothesis = []
+            # chmod +x ${BLEU_SCRIPT_PATH}
+            # https://stackoverflow.com/a/12792002/11814682
+            st = os.stat(BLEU_SCRIPT_PATH)
+            os.chmod(BLEU_SCRIPT_PATH, st.st_mode | stat.S_IEXEC)
 
         for batch in self.get_iterator(data_set, lang1, lang2, data_key = data_key):
 

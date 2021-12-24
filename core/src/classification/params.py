@@ -105,7 +105,8 @@ def add_argument(parser) :
 
     parser.add_argument("--model_path", type=str, default="", 
                         help="Reload transformer model from pretrained model / dico / ...")
-    
+    parser.add_argument("--reload_key", type=str, default="model",
+                        help="model, encoder, decoder ...")
     parser.add_argument("--finetune_layers", type=str, default='', 
                         help="Layers to finetune. default='' ==> freeze the transformer encoder part of the model \
                             0:_1 or 0:-1 ===> fine_tune all the transformer model (0 = embeddings, _1 = last encoder layer) \
@@ -173,6 +174,14 @@ def add_argument(parser) :
     
     parser.add_argument('--yoshua', type=bool_flag, default=False, help="pred_score = sum_i i * softmax_logits(i)")
 
+    # Style transfert
+    parser.add_argument('--penalty', choices = ["lasso", "ridge"], default="lasso", help="")
+    parser.add_argument('--type_penalty', choices = ["group", "last"], default="group", help="")
+    parser.add_argument('--deb_alpha_beta', type=str, default='1.0,1.0', help="")
+    parser.add_argument('--positive_label', type=int, default=0, help="")
+    parser.add_argument('--deb_optimizer', type=str, default="adam,lr=0.0001,weight_decay=0.01", help="")
+    parser.add_argument('--train_only_on_negative_examples', type=bool_flag, default=True, 
+            help="train style transfert only on negative examples")
     return parser
 
 def check_parameters(params) :

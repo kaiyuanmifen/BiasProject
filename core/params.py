@@ -407,6 +407,7 @@ config_dic = {
     "bidirectional":[bool, False],
     "topK":[int, 3],
     "model_path":[str, ""],
+    "reload_key":[str, "model"],
     "google_bert":[bool, False],
     "bert_model_name":[str, "bert-base-uncased"],
     "finetune_layers":[str, ""],
@@ -421,6 +422,14 @@ config_dic = {
     "cross_validation":[str, ""],
     "outliers":[float, 0],
     "yoshua":[bool, False],
+
+    # Style transfert
+    "penalty":[str, "lasso"],
+    "type_penalty":[str, "group"],
+    "deb_alpha_beta": [str, "1.0,1.0"],
+    "positive_label" : [int, 0],
+    "deb_optimizer" : [str, "adam,lr=0.0001"],
+    "train_only_on_negative_examples" : [bool, True],
 }
 
 def from_config_file(params, config_file = None):

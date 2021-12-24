@@ -40,6 +40,7 @@
     "log_softmax":"True",
     "topK":3,
     "model_path":"/content/dump_path/mlm_en/tim/best-valid_mlm_ppl.pth",
+    "reload_key":"model",
     "google_bert":"False",
     "bert_model_name":"bert-base-uncased",
     "finetune_layers":"",
@@ -68,5 +69,12 @@
     "local_rank":"-1",
     "master_port":"-1",
     "asm_cutoffs":"2,3,4,5",
-    "asm_div_value":"4"
+    "asm_div_value":"4",
+
+    "penalty":"lasso",
+    "type_penalty": "group",
+    "deb_alpha_beta": "1.0,1.0",
+    "positive_label" : 0,
+    "deb_optimizer" :"adam,lr=0.0001",
+    "train_only_on_negative_examples" :"True"
 }
