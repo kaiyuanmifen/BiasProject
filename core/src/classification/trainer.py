@@ -1130,6 +1130,12 @@ class Trainer(object):
         
     def eval(self, get_loss, end_of_epoch):
         """ Eval Loop """
+        self.model.eval() # eval mode
+        if self.pre_trainer is not None : 
+            try :
+                self.pre_trainer.model.eval()
+            except AttributeError :
+                pass
         if not self.params.pretrain_type == 0 and self.pre_trainer is not None :
             val_stats, pre_train_scores = self.eval_step(get_loss, test = True, prefix ="test_")
         else :

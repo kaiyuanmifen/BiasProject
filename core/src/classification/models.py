@@ -722,7 +722,7 @@ class GoogleBertClassifier(nn.Module):
         except ValueError: #optimizer got an empty parameter list
             return [optimizer_p]
         
-    def train(self, mode):
+    def train(self, mode = True):
         if not self.freeze_transformer :
             self.embedder.train(mode)
         self.pred_layer.train(mode)

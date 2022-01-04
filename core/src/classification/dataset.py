@@ -412,7 +412,7 @@ class BiasClassificationDataset(Dataset):
             
             elif self.version == 7 :
                 # TODO
-                assert 0 < self.threshold < 1
+                #assert 0 < self.threshold < 1
                 #label = int(round(sum([ score * conf for score, conf in  zip(b, c) ]) / s))
                 label = sum([ score * conf for score, conf in  zip(b, c) ]) / s
                 label = int(label >= self.threshold) # 1 if label >= self.threshold else 0

@@ -7,6 +7,7 @@
 
 import torch
 import torch.nn.functional as F
+from torch.autograd import Variable
 import os
 import numpy as np
 import random
@@ -83,6 +84,11 @@ class LossDebias:
         #loss = torch.linalg.vector_norm(z-z_prime, ord=self.ord, dim=(-2, -1)) # (bs, n_layers)      
         return loss.sum()
 
+def to_var(x, volatile=False):
+    #if torch.cuda.is_available():
+    #    x = x.cuda()
+    return Variable(x, volatile=volatile)
+
 class Debias_Trainer(Trainer) :
     def __init__(self, pretrain_params, *args, **kwds):
         super().__init__(pretrain_params, *args, **kwds)
@@ -103,6 +109,10 @@ class Debias_Trainer(Trainer) :
         self.deb_criterion = LossDebias(penalty=self.params.penalty)
         self.after_init()
 
+        if self.params.fgim :
+            self.train = self.fgim_algorithm
+            self.eval = self.fgim_algorithm
+
     def on_init(self, params, p_params):
         dump_path = os.path.join(params.dump_path, "debias")
         checkpoint_path = os.path.join(dump_path, "checkpoint.pth")
@@ -113,8 +123,9 @@ class Debias_Trainer(Trainer) :
         else :
             self.checkpoint_path = os.path.join(params.dump_path, "checkpoint.pth")
             self.from_deb = False
-        self.deb = TransformerModel(p_params, self.model.dico, is_encoder=True, 
+        deb = TransformerModel(p_params, self.model.dico, is_encoder=True, 
                                     with_output = False, with_emb = False)
+        self.deb = deb.to(params.device)
         #self.deb_optimizer = get_optimizer(self.deb.parameters(), self.params.deb_optimizer)
         #self.deb_criterion = LossDebias(penalty=self.params.penalty)
 
@@ -172,9 +183,9 @@ class Debias_Trainer(Trainer) :
         x_non_deb = x[:,non_mask_deb] # (seq_len, bs)
         lengths_non_deb = lengths[non_mask_deb]
         if self.denoising_ae :
-            (x2, len2) = (x_non_deb, lengths_non_deb)
+            (x2, len2) = (x_non_deb.cpu(), lengths_non_deb.cpu())
             #(x1, len1) = (x_non_deb, lengths_non_deb)
-            (x1, len1) = self.pre_trainer.add_noise(x_non_deb, lengths_non_deb)
+            (x1, len1) = self.pre_trainer.add_noise(x_non_deb.cpu(), lengths_non_deb.cpu())
             # target words to predict
             alen = torch.arange(max_len, dtype=torch.long, device=len2.device)
             pred_mask = alen[:, None] < len2[None] - 1  # do not predict anything given the last target word
@@ -234,6 +245,12 @@ class Debias_Trainer(Trainer) :
             #return input_sent, gen_text, deb_sent
 
     def train_step(self, get_loss) :
+        # train mode
+        self.deb.train() 
+        self.model.train()
+        self.pre_trainer.encoder.train()
+        self.pre_trainer.decoder.train()
+        
         total_stats = []
         for i, batch in enumerate(self.train_data_iter):
             stats_ = {}
@@ -326,11 +343,16 @@ class Debias_Trainer(Trainer) :
         self.train_step(get_loss)
 
     def eval_step(self, get_loss, test = False, prefix =""):
-        self.deb.eval() # eval mode
+        # eval mode
+        self.deb.eval() 
+        self.model.eval()
+        self.pre_trainer.encoder.eval()
+        self.pre_trainer.decoder.eval()
+
         total_stats = []
         text_z_prime = {KEYS["input"] : [], KEYS["gen"] : [], KEYS["deb"] : [], 
                         "origin_labels" : [], "pred_label" : []}
-        refences = []
+        references = []
         hypothesis = []
         hypothesis2 = []
         with torch.no_grad(): 
@@ -378,7 +400,7 @@ class Debias_Trainer(Trainer) :
                         texts=self.generate(x, lengths, z, z_prime = z_prime, log = False)
                         for k, v in texts.items():
                             text_z_prime[k].append(v)
-                        refences.extend(texts[KEYS["input"]])
+                        references.extend(texts[KEYS["input"]])
                         hypothesis.extend(texts[KEYS["gen"]])
                         hypothesis2.extend(texts[KEYS["deb"]])
                         text_z_prime["origin_labels"].append(y2.cpu().numpy())
@@ -388,6 +410,15 @@ class Debias_Trainer(Trainer) :
                 
                     total_stats.append(stats)
 
+        self.end_eval(text_z_prime, references, hypothesis, hypothesis2)
+
+        if test :
+            pre_train_scores = {}
+            return total_stats, pre_train_scores
+
+        return total_stats
+
+    def end_eval(self, text_z_prime, references, hypothesis, hypothesis2):
         output_file, i = "output", 1
         while os.path.isfile(os.path.join(self.params.dump_path, output_file+str(i)+'.txt')):
             i += 1
@@ -397,9 +428,9 @@ class Debias_Trainer(Trainer) :
 
         # compute BLEU
         eval_bleu = True
-        if eval_bleu and refences:
+        if eval_bleu and references:
             if False :
-                bleu = multi_list_bleu(refences, hypothesis)
+                bleu = multi_list_bleu(references, hypothesis)
                 self.bleu = sum(bleu) / len(bleu)
                 self.logger.info("average BLEU %s %s : %f" % ("input", "gen", self.bleu))
             else :
@@ -413,7 +444,7 @@ class Debias_Trainer(Trainer) :
 
                 # export sentences to reference and hypothesis file
                 with open(ref_path, 'w', encoding='utf-8') as f:
-                    f.write('\n'.join(refences) + '\n') 
+                    f.write('\n'.join(references) + '\n') 
                 with open(hyp_path, 'w', encoding='utf-8') as f:
                     f.write('\n'.join(hypothesis) + '\n')
                 with open(hyp_path2, 'w', encoding='utf-8') as f:
@@ -430,11 +461,129 @@ class Debias_Trainer(Trainer) :
                 self.logger.info("BLEU input-deb %s %s : %f" % (hyp_path2, ref_path, bleu))
                 bleu = eval_moses_bleu(hyp_path, hyp_path2)
                 self.logger.info("BLEU gen-deb %s %s : %f" % (hyp_path, hyp_path2, bleu))
-        if test :
-            pre_train_scores = {}
-            return total_stats, pre_train_scores
 
-        return total_stats
+    def fgim_algorithm(self, get_loss, end_of_epoch):
+        """
+        Controllable Unsupervised Text Attribute Transfer 
+        via Editing Entangled Latent Representation
+        """
+        threshold = 0.001
+        lambda_ = 0.9
+        max_iter_per_epsilon = 100
+        w = [2.0,3.0,4.0,5.0,6.0,7.0,8.0]
+        limit_batches = 3
+        
+        # eval mode
+        #self.deb.eval() 
+        self.model.eval()
+        self.pre_trainer.encoder.eval()
+        self.pre_trainer.decoder.eval()
+
+        text_z_prime = {KEYS["input"] : [], KEYS["gen"] : [], KEYS["deb"] : [], 
+                        "origin_labels" : [], "pred_label" : []}
+        references = []
+        hypothesis = []
+        hypothesis2 = []
+        n_batches = 0
+
+        def get_y_hat(logits) :
+            if self.bin_classif :
+                probs = torch.sigmoid(logits)
+                y_hat = probs.round().int()
+            else :
+                probs, y_hat = logits.max(dim=1)
+            return y_hat, probs
+
+        for batch in tqdm(self.train_data_iter):
+            stats_ = {}
+            (x, lengths, langs), y1, y2, weight_out = batch
+            stats_['n_words'] = lengths.sum().item()
+            flag = True
+            if self.params.train_only_on_negative_examples :
+                #negative_examples = ~(y2.squeeze() < self.params.threshold)
+                negative_examples = y2.squeeze() > self.params.threshold
+                x = x[:,negative_examples] # (seq_len, bs-ϵ)
+                lengths = lengths[negative_examples]
+                y1 = y1[negative_examples]
+                y2 = y2[negative_examples]
+                weight_out = weight_out[negative_examples]
+                flag = negative_examples.any()
+            if flag :    
+                y = y2 if self.params.version == 3 else y1
+                x, y, y2, lengths, langs = to_cuda(x, y, y2, lengths, langs)
+                langs = None
+                batch = [(x, lengths, langs), y1, y2, weight_out]
+                origin_data = self.pre_trainer.encoder('fwd', x=x, lengths=lengths, langs=langs, causal=False)
+                # Define target label
+                if self.bin_classif :
+                    y_prime = 1.0 - (y2 > 0.5).float()
+                else :
+                    #y_prime = 5.0 - (y2 > self.params.threshold).float()
+                    y_prime = 5 - y2#.float()
+                batch[2 if self.params.version == 3 else 1] = y_prime
+                flag = False
+                for w_i in w:
+                    #print("---------- w_i:", w_i)
+                    data = to_var(origin_data.clone())  # (batch_size, seq_length, latent_size)
+                    b = True
+                    if b :
+                        data.requires_grad = True
+                        logits, classif_loss = self.model.predict(
+                            data, y_prime, weights = self.train_data_iter.weights)
+                        #_, stats = get_loss(None, batch, self.params, None, logits = logits, loss = classif_loss, mode="train", epoch = self.epoch)
+                        #y_hat = stats["label_pred"]
+                        y_hat, _ = get_y_hat(logits)
+                        self.model.zero_grad()
+                        classif_loss.backward()
+                        data = data - w_i * data.grad.data
+                    else :
+                        data = origin_data
+                        logits, classif_loss = self.model.predict(
+                            data, y_prime, weights = self.train_data_iter.weights)
+                        #_, stats = get_loss(None, batch, self.params, None, logits = logits, loss = classif_loss, mode="train", epoch = self.epoch)
+                        #y_hat = stats["label_pred"]
+                        y_hat, _ = get_y_hat(logits)
+
+                    it = 0 
+                    while True:
+                        #if torch.cdist(y_hat, y_prime) < threshold :
+                        #if ((y_hat - y_prime)**2).sum().float().sqrt() < threshold :
+                        if (y_hat - y_prime).abs().float().mean() < threshold :
+                            flag = True
+                            break
+            
+                        data = to_var(data.clone())  # (batch_size, seq_length, latent_size)
+                        # Set requires_grad attribute of tensor. Important for Attack
+                        data.requires_grad = True
+                        logits, classif_loss = self.model.predict(
+                            data, y_prime, weights = self.train_data_iter.weights)
+                        # Calculate gradients of model in backward pass
+                        self.model.zero_grad()
+                        classif_loss.backward()
+                        data = data - w_i * data.grad.data
+                        it += 1
+                        # data = perturbed_data
+                        w_i = lambda_ * w_i
+                        if it > max_iter_per_epsilon:
+                            break
+
+                    try :            
+                        texts = self.generate(x, lengths, origin_data, z_prime = data, log = False)
+                        for k, v in texts.items():
+                            text_z_prime[k].append(v)
+                        references.extend(texts[KEYS["input"]])
+                        hypothesis.extend(texts[KEYS["gen"]])
+                        hypothesis2.extend(texts[KEYS["deb"]])
+                        text_z_prime["origin_labels"].append(y2.cpu().numpy())
+                        text_z_prime["pred_label"].append(y_hat.cpu().numpy())
+                        text_z_prime["change"].append([flag]*len(y2))
+                    except AssertionError :
+                        pass
+                    
+            n_batches += 1
+            if n_batches > limit_batches:
+                break   
+        self.end_eval(text_z_prime, references, hypothesis, hypothesis2)
 
     def modify_pretrainer_score(self, pre_train_scores) :
         data_set = "valid"

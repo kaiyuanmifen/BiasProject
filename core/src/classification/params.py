@@ -185,6 +185,7 @@ def add_argument(parser) :
     parser.add_argument('--deb_optimizer', type=str, default="adam,lr=0.0001,weight_decay=0.01", help="")
     parser.add_argument('--train_only_on_negative_examples', type=bool_flag, default=True, 
             help="train style transfert only on negative examples")
+    parser.add_argument("--fgim", type = bool_flag, default=False, help='fast gradient iterative method')
     return parser
 
 def check_parameters(params) :

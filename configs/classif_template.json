@@ -78,5 +78,6 @@
     "deb_alpha_beta": "1.0,1.0",
     "positive_label" : 0,
     "deb_optimizer" :"adam,lr=0.0001",
-    "train_only_on_negative_examples" :"True"
+    "train_only_on_negative_examples" :"True",
+    "fgim":"False"
 }

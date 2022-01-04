@@ -432,6 +432,7 @@ config_dic = {
     "positive_label" : [int, 0],
     "deb_optimizer" : [str, "adam,lr=0.0001"],
     "train_only_on_negative_examples" : [bool, True],
+    "fgim":[bool, False]
 }
 
 def from_config_file(params, config_file = None):
