@@ -36,6 +36,8 @@ def main(params, params_pretrain, trainer_class):
         
     # Model
     if params.pretrain :
+        #if params.model_path :
+        #    params_pretrain.reload_model="%s,%s"%(params.model_path, params.model_path)
         for attr_name in ['n_gpu_per_node', 'multi_gpu', 'is_master']:
             setattr(params_pretrain, attr_name, getattr(params, attr_name))
         pre_trainer, evaluator, _ = get_trainer_evaluator(params_pretrain, logger)

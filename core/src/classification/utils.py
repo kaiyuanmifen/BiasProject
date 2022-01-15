@@ -143,7 +143,8 @@ def get_data_path(params, data_file, n_samples, split) :
     data_path = os.path.join(params.dump_path, '%s.pth'%filename)
     return data_path
 
-def to_tensor(sentences, pad_index, dico = None, tokenize_and_cut = None, batch_first = False):
+def to_tensor(sentences, pad_index, dico = None, tokenize_and_cut = None, 
+                batch_first = False, lang_id = None):
     if type(sentences) == str :
         sentences = [sentences]
     else :
@@ -160,12 +161,15 @@ def to_tensor(sentences, pad_index, dico = None, tokenize_and_cut = None, batch_
         for i in range(bs):
             sent = torch.LongTensor([dico.index(w) for w in sentences[i]])
             word_ids[:len(sent), i] = sent
-        langs = None
+        """
+        langs = word_ids.new(slen, bs).fill_(lang_id) if lang_id is not None else None
         if batch_first :
-            return word_ids.transpose(0,1), lengths, langs
+            return word_ids.transpose(0, 1), lengths, langs
         else :
             return word_ids, lengths, langs
-            
+        """
+        if batch_first :
+            word_ids = word_ids.transpose(0, 1)  
     else :
         sentences = [tokenize_and_cut(s) for s in sentences]
         bs = len(sentences)
@@ -176,11 +180,24 @@ def to_tensor(sentences, pad_index, dico = None, tokenize_and_cut = None, batch_
         for i in range(bs):
             sent = torch.LongTensor(sentences[i])
             word_ids[i,:len(sent)] = sent
-        langs = None
+        """
+        langs = word_ids.new(slen, bs).fill_(lang_id) if lang_id is not None else None
         if batch_first :
             return word_ids, lengths, langs
         else :
-            return word_ids.transpose(0,1), lengths, langs
+            return word_ids.transpose(0, 1), lengths, langs
+        """
+        if not batch_first :
+            word_ids = word_ids.transpose(0, 1)
+    langs = None
+    if lang_id is not None :
+        if type(lang_id) == int :
+            langs = word_ids.new(slen, bs).fill_(lang_id)
+        elif type(lang_id) == list :
+            assert len(lang_id) == bs
+            #langs = torch.LongTensor(lang_id) # (bs)
+            langs = torch.LongTensor(slen*[lang_id])#.transpose(0, 1)
+    return word_ids, lengths, langs
         
 def init_embedding_vector(size) :
     return torch.zeros(size)

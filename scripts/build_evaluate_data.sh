@@ -45,14 +45,14 @@ get_n_samples() {
     NLINES=`wc -l $1  | awk -F " " '{print $1}'`;
     NLINES=$(($NLINES+1));
     if [ $NLINES -le $2 ]; then
-      cp $1 $3
+        cp $1 $3
     else
-      NTAIL=$(($2/2));
-      NHEAD=$(($2 - $NTAIL));
-      head -n $NHEAD $1 > $3;
-      tail -n $NTAIL $1 >> $3;
-      #shuf --random-source=<(get_seeded_random 42) $1 | head $NHEAD   > $3;
-      #shuf --random-source=<(get_seeded_random 42) $1 | tail $NTAIL   >> $3;
+        NTAIL=$(($2/2));
+        NHEAD=$(($2 - $NTAIL));
+        head -n $NHEAD $1 > $3;
+        tail -n $NTAIL $1 >> $3;
+        #shuf --random-source=<(get_seeded_random 42) $1 | head $NHEAD   > $3;
+        #shuf --random-source=<(get_seeded_random 42) $1 | tail $NTAIL   >> $3;
     fi
 }
 
@@ -108,8 +108,8 @@ else
     echo "***Apply BPE tokenization on the corpora and binarize everything using preprocess.py.***"
     #for split in train valid test; do
     for split in valid test; do
-       $FASTBPE applybpe $tgt_path/$split.$lg $src_path/$split.$lg $CODE_VOCAB_PATH/codes 
-       python preprocess.py $CODE_VOCAB_PATH/vocab $tgt_path/$split.$lg
+        $FASTBPE applybpe $tgt_path/$split.$lg $src_path/$split.$lg $CODE_VOCAB_PATH/codes 
+        python preprocess.py $CODE_VOCAB_PATH/vocab $tgt_path/$split.$lg
     done
 fi
 

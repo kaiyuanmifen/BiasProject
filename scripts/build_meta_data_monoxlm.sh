@@ -6,9 +6,14 @@
 
 set -e
 
+#all_split=$(echo train-valid-test | sed -e 's/\-/ /g')
+#all_split=train
+#proxy_split=train
+#proxy_split=test
+
 # 1) if no parameters : stop
 if [ $# = 0 ];then
-  exit
+    exit
 fi
 
 SUB_TASKS_DATA_PERCENT=${1-""}
@@ -79,14 +84,14 @@ get_n_samples() {
     NLINES=`wc -l $1  | awk -F " " '{print $1}'`;
     NLINES=$(($NLINES+1));
     if [ $NLINES -le $2 ]; then
-      cp $1 $3
+        cp $1 $3
     else
-      NTAIL=$(($2/2));
-      NHEAD=$(($2 - $NTAIL));
-      head -n $NHEAD $1 > $3;
-      tail -n $NTAIL $1 >> $3;
-      #shuf --random-source=<(get_seeded_random 42) $1 | head $NHEAD   > $3;
-      #shuf --random-source=<(get_seeded_random 42) $1 | tail $NTAIL   >> $3;
+        NTAIL=$(($2/2));
+        NHEAD=$(($2 - $NTAIL));
+        head -n $NHEAD $1 > $3;
+        tail -n $NTAIL $1 >> $3;
+        #shuf --random-source=<(get_seeded_random 42) $1 | head $NHEAD   > $3;
+        #shuf --random-source=<(get_seeded_random 42) $1 | tail $NTAIL   >> $3;
     fi
 }
 
@@ -201,16 +206,16 @@ echo "***build the training set for BPE tokenization ($nCodes codes)***"
 # I'm only handling the case SAME_VOCAB = True for now
 
 echo -e "\n"
-echo "***shuf ... Generating $shuf_n_samples random permutations of training data and store result in $OUTPATH/${pair}/bpe.train***"
+echo "***shuf ... Generating $shuf_n_samples random permutations of training data and store result in $OUTPATH/bpe.${proxy_split}***"
 
 # para 
 # if PARA = True (then PARA_PATH must exist)
 
-if [ ! -f $OUTPATH/bpe.train ]; then
+if [ ! -f $OUTPATH/bpe.${proxy_split} ]; then
     if [ $PARA = "True" ]; then
         for pair in $(echo $sub_tasks | sed -e 's/\,/ /g'); do
             for lg in $(echo $pair | sed -e 's/\-/ /g'); do
-                shuf -r -n $shuf_n_samples $PARA_PATH/$pair.$lg.train >> $OUTPATH/bpe.train
+                shuf -r -n $shuf_n_samples $PARA_PATH/$pair.$lg.${proxy_split} >> $OUTPATH/bpe.${proxy_split}
             done
         done
     fi
@@ -220,42 +225,42 @@ if [ ! -f $OUTPATH/bpe.train ]; then
     if [ $MONO = "True" ] && [ -d $MONO_PATH ]; then
         for pair in $(echo $sub_tasks | sed -e 's/\,/ /g'); do
             for lg in $(echo $pair | sed -e 's/\-/ /g'); do
-                shuf -r -n $shuf_n_samples $MONO_PATH/$lg.train >> $OUTPATH/bpe.train
+                shuf -r -n $shuf_n_samples $MONO_PATH/$lg.${proxy_split} >> $OUTPATH/bpe.${proxy_split}
             done
         done
     fi
 else
-    #rm $OUTPATH/bpe.train
-    echo "file $OUTPATH/bpe.train already exists"
+    #rm $OUTPATH/bpe.${proxy_split}
+    echo "file $OUTPATH/bpe.${proxy_split} already exists"
 fi
 
 echo -e "\n"
-echo "***Learn the BPE vocabulary on the training set : $OUTPATH/bpe.train ...***"
+echo "***Learn the BPE vocabulary on the training set : $OUTPATH/bpe.${proxy_split} ...***"
 if [ ! -f $OUTPATH/codes ]; then
-     $FASTBPE learnbpe $nCodes $OUTPATH/bpe.train > $OUTPATH/codes
+    $FASTBPE learnbpe $nCodes $OUTPATH/bpe.${proxy_split} > $OUTPATH/codes
 else
     #rm $OUTPATH/codes
     echo "file $OUTPATH/codes already exists"
 fi
 
-echo "***Learn $nCodes BPE code on the bpe.train file***" 
+echo "***Learn $nCodes BPE code on the bpe.${proxy_split} file***" 
 
 echo -e "\n"
 echo "***Get the post-BPE vocab***"
-if [ ! -f $OUTPATH/train ]; then
-    $FASTBPE applybpe $OUTPATH/train $OUTPATH/bpe.train $OUTPATH/codes
+if [ ! -f $OUTPATH/${proxy_split} ]; then
+    $FASTBPE applybpe $OUTPATH/${proxy_split} $OUTPATH/bpe.${proxy_split} $OUTPATH/codes
 else
     #rm $OUTPATH/train
-    echo "file $OUTPATH/train already exists"
+    echo "file $OUTPATH/${proxy_split} already exists"
 fi
 
 if [ ! -f $OUTPATH/vocab ]; then
-    cat $OUTPATH/train | $FASTBPE getvocab - > $OUTPATH/vocab
+    cat $OUTPATH/${proxy_split} | $FASTBPE getvocab - > $OUTPATH/vocab
 else
     #rm $OUTPATH/vocab
     echo "file $OUTPATH/vocab already exists"
 fi
-  
+
 echo -e "\n"
 echo "***Apply BPE tokenization on the corpora.***"
 
@@ -263,7 +268,7 @@ echo "***Apply BPE tokenization on the corpora.***"
 if [ $PARA = "True" ]; then
     for pair in $(echo $sub_tasks | sed -e 's/\,/ /g'); do
         for lg in $(echo $pair | sed -e 's/\-/ /g'); do
-            for split in train valid test; do
+            for split in $all_split; do
                 if [ ! -f $OUTPATH/$pair.$lg.$split ]; then
                     $FASTBPE applybpe $OUTPATH/$pair.$lg.$split $PARA_PATH/$pair.$lg.$split $OUTPATH/codes
                 else
@@ -279,20 +284,20 @@ fi
 if [ $MONO = "True" ] && [ -d $MONO_PATH ]; then
     for pair in $(echo $sub_tasks | sed -e 's/\,/ /g'); do
         for lg in $(echo $pair | sed -e 's/\-/ /g'); do
-            for split in train valid test; do
+            for split in $all_split; do
                 if [ ! -f $OUTPATH/$split.$lg ]; then
                     $FASTBPE applybpe $OUTPATH/$split.$lg $MONO_PATH/$lg.$split $OUTPATH/codes
                     # Add para data to mono data before preprocessing
                     add_para_data_to_mono_data=${3-'True'}
                     if [ $add_para_data_to_mono_data = "True" ]; then 
-                      if [ $PARA = "True" ]; then
-                          for lg_tmp in $(echo $pair | sed -e 's/\-/ /g'); do
-                              for split_tmp in train valid test; do
-                                  # Add the contents of $OUTPATH/$pair.$lg_tmp.$split_tmp after $OUTPATH/$split.$lg
-                                  cat $OUTPATH/$pair.$lg_tmp.$split_tmp >> $OUTPATH/$split.$lg
-                              done
-                          done
-                      fi
+                        if [ $PARA = "True" ]; then
+                            for lg_tmp in $(echo $pair | sed -e 's/\-/ /g'); do
+                                for split_tmp in train valid test; do
+                                    # Add the contents of $OUTPATH/$pair.$lg_tmp.$split_tmp after $OUTPATH/$split.$lg
+                                    cat $OUTPATH/$pair.$lg_tmp.$split_tmp >> $OUTPATH/$split.$lg
+                                done
+                            done
+                        fi
                     fi
                 else
                     echo "file $OUTPATH/$split.$lg already exists"
@@ -322,7 +327,7 @@ build_fine_tune_data() {
         if [ $data_percent != "" ] && [ $data_percent -gt 0 ] ;then
             pair=${array1[$i]}
             for lg in $(echo $pair | sed -e 's/\-/ /g'); do
-                for split in train valid test; do
+                for split in $all_split; do
                     # PARA
                     if [ $PARA = "True" ]; then
                         name=$OUTPATH/$pair.$lg.$split
@@ -380,7 +385,7 @@ echo "***Binarize everything using preprocess.py.***"
 if [ $PARA = "True" ]; then
     for pair in $(echo $sub_tasks | sed -e 's/\,/ /g'); do
         for lg in $(echo $pair | sed -e 's/\-/ /g'); do
-            for split in train valid test; do
+            for split in $all_split; do
                 if [ ! -f $OUTPATH/$pair.$lg.$split.pth ]; then
                     python preprocess.py $OUTPATH/vocab $OUTPATH/$pair.$lg.$split
                 else
@@ -403,7 +408,7 @@ fi
 if [ $MONO = "True" ] && [ -d $MONO_PATH ]; then
     for pair in $(echo $sub_tasks | sed -e 's/\,/ /g'); do
         for lg in $(echo $pair | sed -e 's/\-/ /g'); do
-            for split in train valid test; do
+            for split in $all_split; do
                 if [ ! -f $OUTPATH/$split.$lg.pth ]; then
                     python preprocess.py $OUTPATH/vocab $OUTPATH/$split.$lg
                 else
@@ -429,7 +434,7 @@ if [ $MONO = "True" ] && [ ! -d $MONO_PATH ] && [ -d $PARA_PATH ]; then
     echo "***Using parallel data to construct monolingual data***"
     for pair in $(echo $sub_tasks | sed -e 's/\,/ /g'); do
         for lg in $(echo $pair | sed -e 's/\-/ /g'); do
-            for split in train valid test; do
+            for split in $all_split; do
                 if [ ! -f $OUTPATH/$split.$lg.pth ]; then
                     cp $OUTPATH/$pair.$lg.$split.pth $OUTPATH/$split.$lg.pth
                 else
@@ -451,7 +456,7 @@ echo -e "\n"
 echo "***Creat the file to train the XLM model with MLM+TLM objective***"
 for pair in $(echo $sub_tasks | sed -e 's/\,/ /g'); do
     for lg in $(echo $pair | sed -e 's/\-/ /g'); do
-        for split in train valid test; do
+        for split in $all_split; do
             if [ ! -f $OUTPATH/$split.$pair.$lg.pth ]; then
                 cp $OUTPATH/$pair.$lg.$split.pth $OUTPATH/$split.$pair.$lg.pth
             else

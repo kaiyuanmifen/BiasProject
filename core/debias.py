@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 #
 
+from platform import version
 import torch
 import torch.nn.functional as F
 from torch.autograd import Variable
@@ -37,6 +38,9 @@ def calc_bleu(reference, hypothesis):
     #return list_bleu([reference], hypothesis)
 
 def write_text_z_in_file(output_file, text_z_prime) :
+    source_text = []
+    generated_text = []
+    debias_text = []
     with open(output_file, 'w') as f:
         keys = list(text_z_prime.keys())
         k1 = keys.index(KEYS["input"])
@@ -51,12 +55,21 @@ def write_text_z_in_file(output_file, text_z_prime) :
                 source = item[k1][j].split(" ")
                 before = item[k2][j].split(" ")
                 after = item[k3][j].split(" ")
+                source_text.append(item[k1][j])
+                generated_text.append(item[k2][j])
+                debias_text.append(item[k3][j])
                 b1 = round(calc_bleu(source, before), 4)
                 b2 = round(calc_bleu(source, after), 4)
                 b3 = round(calc_bleu(before, after), 4)
                 f.writelines([f"bleu --> {KEYS['input']} vs {KEYS['gen']} = %s, {KEYS['input']} vs {KEYS['deb']} = %s, {KEYS['gen']} vs {KEYS['deb']} = %s\n"%(b1, b2, b3)])
                 f.write("\n")
-
+    with open(output_file + ".source.txt", 'w') as f:
+        f.writelines(["%s\n"%t for t in source_text])
+    with open(output_file + ".gen.txt", 'w') as f:
+        f.writelines(["%s\n"%t for t in generated_text])
+    with open(output_file + ".deb.txt", 'w') as f:
+        f.writelines(["%s\n"%t for t in debias_text])
+        
 class LossDebias:
     """"""
     def __init__(self,  penalty="lasso"):
@@ -78,26 +91,121 @@ class LossDebias:
         #    loss = torch.stack([self.criterion(z_i, z_prime_i) for z_i, z_prime_i in zip(z, z_prime)]) # (bs, )
         #else :
         #    loss = self.criterion(z, z_prime) 
-  
+
         #loss = torch.linalg.matrix_norm(z-z_prime, ord=self.ord, dim=(-2, -1), keepdim=False) # (bs, n_layers)
         loss = torch.linalg.norm(z-z_prime, ord=self.ord, dim=(-1)) # (bs, n_layers, seq_len)
         #loss = torch.linalg.vector_norm(z-z_prime, ord=self.ord, dim=(-2, -1)) # (bs, n_layers)      
-        return loss.sum()
+        #return loss.sum()
+        return loss.sum(dim=-1).sum(dim=-1).mean()
 
 def to_var(x, volatile=False):
     #if torch.cuda.is_available():
     #    x = x.cuda()
     return Variable(x, volatile=volatile)
 
+def arrange_x(x, lengths, langs) :
+    """
+    Let's suppose that we have at the beginning (pad_index = 2, </s>_index = 1)
+    x = LongTensor([[1, x_11, x_12, 1, 2],
+                    [1, x_21, x_22, x_23, 1],
+                    [1, x_31, 1, 2, 2]]
+                    ).transpose(0, 1) # (seq_len, bs)
+    So lengths = LongTensor([4, 5, 3])
+
+    If we select some examples base on the mask : examples = tensor([True, False, True]) 
+    We end-up with :
+    x = x[:,examples] = LongTensor(
+                            [[1,   1],
+                            [x_11, x_31],
+                            [x_12, 1],
+                            [1,    2],
+                            [2,    2]])
+    and : lengths = lengths[examples] = LongTensor([4, 3])
+    So : max(lengths) != len(x)
+    This method corrects this by making x become :
+    x = LongTensor(
+                [[1,   1],
+                [x_11, x_31],
+                [x_12, 1],
+                [1,    2]])
+    """
+    #alen = torch.arange(max(lengths), dtype=torch.long, device=lengths.device)
+    alen = torch.arange(max(lengths))
+    return x[alen], langs[alen]
+
+def select_with_mask(batch, mask) :
+    flag = mask.any()
+    if flag :
+        (x, lengths, langs), y1, y2, weight_out = batch
+        _, bs = x.shape
+        x = x[:,mask] # (seq_len, bs-ϵ)
+        lengths = lengths[mask]
+        langs = langs[:,mask] # (seq_len, bs-ϵ)
+        y1 = y1[mask]
+        y2 = y2[mask]
+        weight_out = weight_out[mask]
+        if bs == 1 :
+            x = x.squeeze(1)
+            langs = langs.squeeze(1)
+            lengths = lengths.squeeze(0)
+            y1 = y1.squeeze(0)
+            y2 = y2.squeeze(0)
+            weight_out = weight_out.squeeze(0)
+        x, langs = arrange_x(x, lengths, langs)
+        batch = (x, lengths, langs), y1, y2, weight_out
+    return batch, flag
+
+class LinearDeb(torch.nn.Module):
+    def __init__(self, pretrain_params):
+        super().__init__()
+        if True :
+            self.deb = torch.nn.Linear(pretrain_params.emb_dim, pretrain_params.emb_dim)
+        else :
+            intermediate_dim = 100
+            self.deb = torch.nn.Sequential(
+                torch.nn.Linear(pretrain_params.emb_dim, intermediate_dim),
+                torch.nn.Linear(intermediate_dim, pretrain_params.emb_dim)
+            )
+        self.n_layers = pretrain_params.n_layers
+
+    def forward(self, mode, **kwargs):
+        if mode == 'fwd':
+            return self.fwd(**kwargs)
+        elif mode == 'predict':
+            return self.predict(**kwargs)
+        else:
+            raise Exception("Unknown mode: %s" % mode)
+
+    def fwd(self, x, lengths, causal, src_enc=None, src_len=None, positions=None, langs=None, cache=None,
+            intermediate_states = False
+    ):  
+        """
+        x : (bs, seq_len, emb_dim)
+        """
+        h = self.deb(x).transpose(0, 1) # (seq_len, bs, emb_dim)
+        if intermediate_states :
+            return h, [h]*self.n_layers
+        return h
+
+    def predict(self, tensor, pred_mask, y, get_scores, reduction='mean'):
+        pass
+    
 class Debias_Trainer(Trainer) :
     def __init__(self, pretrain_params, *args, **kwds):
         super().__init__(pretrain_params, *args, **kwds)
         # only on negative example
-        self.params.train_only_on_negative_examples = True
+        # self.params.train_only_on_negative_examples = True
         assert self.params.penalty in ["lasso", "ridge"]
         assert self.params.type_penalty in ["last", "group"]
         assert self.params.yoshua 
         self.bin_classif = self.params.version == 7
+        self.max_label = 2.0 * self.params.threshold # 1.0 if threshold = 0.5, 5.0 if threshold=2.5 
+        if self.bin_classif :
+            self.params.threshold = 0.5
+            self.max_label = 1.0
+        else :
+            self.max_label = 5.0
+            pass
 
         self.params.pretrain_type = 1 # for evaluation (text gen)
         self.params.eval_pretrainer = False # for evaluation (classification)
@@ -125,6 +233,7 @@ class Debias_Trainer(Trainer) :
             self.from_deb = False
         deb = TransformerModel(p_params, self.model.dico, is_encoder=True, 
                                     with_output = False, with_emb = False)
+        #deb = LinearDeb(p_params)
         self.deb = deb.to(params.device)
         #self.deb_optimizer = get_optimizer(self.deb.parameters(), self.params.deb_optimizer)
         #self.deb_criterion = LossDebias(penalty=self.params.penalty)
@@ -137,18 +246,25 @@ class Debias_Trainer(Trainer) :
         #self.pre_trainer.encoder = self.model.embedder.model
         
     def classif_step(self, get_loss, y, batch):
-        (x, lengths, langs), _, _, weight_out = batch
+        (x, lengths, langs), _, _, _ = batch
         z, z_list = self.pre_trainer.encoder('fwd', x=x, lengths=lengths, langs=langs, 
                 causal=False, intermediate_states = True)
         logits, classif_loss = self.model.predict(
-            z, y, weights = self.train_data_iter.weights)
+            z, y, weights = self.val_data_iter.weights)
         _, stats = get_loss(None, batch, self.params, None, logits = logits, loss = classif_loss, mode="train", epoch = self.epoch)
-        y_hat = stats["label_pred"]
+        if self.bin_classif :
+            y_hat = stats["logits"]
+        else :
+            y_hat = stats["label_pred"]
         return classif_loss, logits, z, z_list, stats, y_hat
 
-    def debias_step(self, logits, lengths, z, z_list, mask_deb, bs):
-        lengths_deb = lengths[mask_deb].squeeze(0) if bs == 1 else lengths[mask_deb]
-        z_deb = z[mask_deb].squeeze(0) if bs == 1 else z[mask_deb] # (bs-ϵ, seq_len, dim)
+    def debias_step(self, y, lengths, z, z_list, mask_deb, bs):
+        if mask_deb is not None:
+            lengths_deb = lengths[mask_deb].squeeze(0) if bs == 1 else lengths[mask_deb]
+            z_deb = z[mask_deb].squeeze(0) if bs == 1 else z[mask_deb] # (bs-ϵ, seq_len, dim)
+        else :
+            lengths_deb = lengths 
+            z_deb = z + 0.0
         z_prime, z_prime_list = self.deb('fwd', x=z_deb, lengths=lengths_deb, 
             causal=False, intermediate_states = True)
         z_prime = z_prime.transpose(0, 1)
@@ -157,20 +273,40 @@ class Debias_Trainer(Trainer) :
             loss_deb = self.deb_criterion(z_deb, z_prime, is_list = False) 
         elif self.params.type_penalty == "group" :
             z_list, z_prime_list = z_list[1:], z_prime_list[1:] # exclude words embedding
-            z_deb_list = [z_[mask_deb] for z_ in z_list] # (n_layers, bs, seq_len, dim)
+            if mask_deb is not None :
+                z_deb_list = [z_[mask_deb] for z_ in z_list] # (n_layers, bs, seq_len, dim)
+            else :
+                z_deb_list = z_list # (n_layers, bs, seq_len, dim)
             #z_prime_list = [z_.transpose(0, 1) for z_ in z_prime_list] # (n_layers, bs, seq_len, dim)
             #assert len(z_deb_list) == len(z_prime_list)
             loss_deb = self.deb_criterion(z_deb_list, z_prime_list, is_list = True) 
-                    
-        #y_hat_deb = y_hat[mask_deb]
-        #loss_deb = self.alpha * loss_deb + self.beta * y_hat_deb.sum()
-        logits_deb = logits[mask_deb] # (bs, n_class) if not bin_classif else (bs,)
-        if self.bin_classif :
-            debias_label_loss = - F.logsigmoid(logits_deb)
-        else :
-            debias_label_loss = - F.log_softmax(logits_deb, dim = 1)[:,0].sum()
-            #debias_label_loss = - F.log_softmax(logits_deb.T, dim = 0)[0].sum()
         
+        #self.params.positive_label==0
+        if mask_deb is not None:
+            y_deb = y[mask_deb]
+            y_prime = self.max_label - y_deb # "1"-1=0, "1"-0=1 ...
+            #y_prime = m - (y > self.params.threshold).float()
+            z_prime = z_prime.transpose(0, 1)
+            logits_deb, classif_loss = self.model.predict(z_prime, y_prime, weights = None)
+            if self.bin_classif :
+                #debias_label_loss = - F.logsigmoid(logits_deb)
+                debias_label_loss = - torch.log(1 - torch.sigmoid(logits_deb)).sum()
+            else :
+                debias_label_loss = - F.log_softmax(logits_deb, dim = 1)[:,0].sum()
+                #debias_label_loss = - F.log_softmax(logits_deb.T, dim = 0)[0].sum()
+        else :
+            y_prime = self.max_label - y # "1"-1=0, "1"-0=1 ...
+            #y_prime = m - (y > self.params.threshold).float()
+            z_prime = z_prime.transpose(0, 1)
+            logits_deb, classif_loss = self.model.predict(z_prime, y_prime, weights = None)
+            if self.bin_classif :
+                prob = torch.sigmoid(logits_deb)
+                debias_label_loss = - torch.log(y * (1.0 - prob) + (1.0 - y) * prob).sum()
+            else :
+                prob = F.softmax(logits_deb)
+                debias_label_loss = - torch.log(prob[:,0] + 1 - prob[:,-1]).sum()
+
+        debias_label_loss = 1.0 * debias_label_loss + 1.0 * classif_loss
         loss_deb = self.alpha * loss_deb + self.beta * debias_label_loss
                     
         self.deb_optimizer.zero_grad()
@@ -179,9 +315,22 @@ class Debias_Trainer(Trainer) :
 
         return loss_deb, z_prime, lengths_deb
 
-    def enc_dec(self, x, lengths, langs, z, non_mask_deb, bs, max_len):
-        x_non_deb = x[:,non_mask_deb] # (seq_len, bs)
-        lengths_non_deb = lengths[non_mask_deb]
+    def enc_dec(self, x, lengths, langs, z, non_mask_deb, bs):
+        if non_mask_deb is not None :
+            x_non_deb = x[:,non_mask_deb] # (seq_len, bs)
+            lengths_non_deb = lengths[non_mask_deb]
+            langs_non_deb = langs[:,non_mask_deb]
+            if bs == 1 :
+                x_non_deb = x_non_deb.squeeze(1)
+                langs_non_deb = langs_non_deb.squeeze(1)
+                lengths_non_deb = lengths_non_deb.squeeze(0)
+            x_non_deb, langs_non_deb = arrange_x(x_non_deb, lengths_non_deb, langs_non_deb)
+            z = z[non_mask_deb]#.squeeze(0) if bs == 1 else z[non_mask_deb] # (bs, seq_len, dim)
+        else :
+            x_non_deb = x + 0 # (seq_len, bs)
+            lengths_non_deb = lengths
+            langs_non_deb = langs
+        max_len = lengths_non_deb.max()
         if self.denoising_ae :
             (x2, len2) = (x_non_deb.cpu(), lengths_non_deb.cpu())
             #(x1, len1) = (x_non_deb, lengths_non_deb)
@@ -194,13 +343,14 @@ class Debias_Trainer(Trainer) :
             # cuda
             x1, len1, x2, len2, y = to_cuda(x1, len1, x2, len2, y)
             # encode source sentence
-            enc1 = self.pre_trainer.encoder('fwd', x=x1, lengths=len1, langs=langs, causal=False)
+            langs1 = langs_non_deb[torch.arange(x1.size(0))]
+            enc1 = self.pre_trainer.encoder('fwd', x=x1, lengths=len1, langs=langs1, causal=False)
             enc1 = enc1.transpose(0, 1)
             #lambda_coeff = self.pre_trainer.params.lambda_ae
             lambda_coeff = 1
         else :
             x2, len1, len2 = x_non_deb, lengths_non_deb, lengths_non_deb
-            enc1 = z[non_mask_deb]#.squeeze(0) if bs == 1 else z[non_mask_deb] # (bs, seq_len, dim)
+            enc1 = z
             # target words to predict
             alen = torch.arange(max_len, dtype=torch.long, device=len2.device)
             pred_mask = alen[:, None] < len2[None] - 1  # do not predict anything given the last target word
@@ -209,28 +359,58 @@ class Debias_Trainer(Trainer) :
             # cuda
             y = y.to(x_non_deb.device)
             lambda_coeff = 1
-        dec2 = self.pre_trainer.decoder('fwd', x=x2, lengths=len2, langs=langs, causal=True, src_enc=enc1, src_len=len1)
+        dec2 = self.pre_trainer.decoder('fwd', x=x2, lengths=len2, langs=langs_non_deb, causal=True, src_enc=enc1, src_len=len1)
         word_scores, loss_rec = self.pre_trainer.decoder('predict', tensor=dec2, pred_mask=pred_mask, y=y, get_scores=False)
         loss_rec = lambda_coeff * loss_rec
 
         return loss_rec, word_scores, y
 
-    def generate(self, x, lengths, z, z_prime = None, log = True, max_print=2):
+    def generate(self, x, lengths, langs, z, z_prime = None, log = True, max_print=2):
         input_sent = convert_to_text(x, lengths, self.evaluator.dico, self.pre_trainer.params)
         with torch.no_grad(): 
-            lang1, lang2 = self.pre_trainer.params.mt_steps[0]
-            #lang1_id = self.pre_trainer.params.lang2id[lang1]
-            lang2_id = self.pre_trainer.params.lang2id[lang2]
-   
-            max_len = int(1.5 * lengths.max().item() + 10)
-            self.pre_trainer.params.beam_size = 1                         
-            generated, lengths_1 = self.pre_trainer.decoder.generate(z, lengths, lang2_id, max_len=max_len)
-            gen_text = convert_to_text(generated, lengths_1, self.evaluator.dico, self.pre_trainer.params)
             if z_prime is None :
                 z_prime = self.deb('fwd', x=z, lengths=lengths, causal=False)
                 z_prime = z_prime.transpose(0, 1)
-            generated, lengths_2 = self.pre_trainer.decoder.generate(z_prime, lengths, lang2_id, max_len=max_len)
-            deb_sent = convert_to_text(generated, lengths_2, self.evaluator.dico, self.pre_trainer.params)
+            """
+            #lang1, lang2 = self.pre_trainer.params.mt_steps[0]
+            lang1, lang2 = self.pre_trainer.params.langs
+            #lang1_id = self.pre_trainer.params.lang2id[lang1]
+            lang2_id = self.pre_trainer.params.lang2id[lang2]
+            """
+            lang2_id = 1
+            max_len = int(1.5 * lengths.max().item() + 10)
+            seq_len = lengths.max()
+            if seq_len >= max_len :
+                scr_langs = langs[torch.arange(max_len)]
+            else :
+                #tgt_langs = torch.cat((langs, langs[torch.arange(max_len - seq_len)]), dim=0)
+                scr_langs = torch.cat((langs, langs[0].repeat(max_len - seq_len, 1)), dim=0)
+            tgt_langs = 1 - scr_langs # the target langs is the opposite of the source lang
+            
+            self.pre_trainer.params.beam_size = 1
+            if self.pre_trainer.params.beam_size == 1 :       
+                generated_1, lengths_1 = self.pre_trainer.decoder.generate(z, lengths, lang2_id, 
+                            max_len=max_len, sample_temperature=None, langs = tgt_langs)
+                generated_2, lengths_2 = self.pre_trainer.decoder.generate(z_prime, lengths, lang2_id, 
+                            max_len=max_len, sample_temperature=None, langs = tgt_langs)
+            else :
+                pass
+                """
+                beam_size = self.pre_trainer.params.beam_size
+                tgt_langs = tgt_langs.repeat(1, beam_size) # (max_len, bs * beam_size)
+                generated_1, lengths_1 = self.pre_trainer.decoder.generate_beam(
+                        z, lengths, lang2_id, beam_size = beam_size,
+                        length_penalty = self.pre_trainer.params.length_penalty,
+                        early_stopping = self.pre_trainer.params.early_stopping,
+                        max_len = max_len, langs = tgt_langs)
+                generated_2, lengths_2 = self.pre_trainer.decoder.generate_beam(
+                        z_prime, lengths, lang2_id, beam_size = beam_size,
+                        length_penalty = self.pre_trainer.params.length_penalty,
+                        early_stopping = self.pre_trainer.params.early_stopping,
+                        max_len = max_len, langs = tgt_langs)
+                #"""
+            gen_text = convert_to_text(generated_1, lengths_1, self.evaluator.dico, self.pre_trainer.params)
+            deb_sent = convert_to_text(generated_2, lengths_2, self.evaluator.dico, self.pre_trainer.params)
         if log :
             i = random.randint(0, len(z)-1)
             max_print = min(i+max_print, len(x))
@@ -256,71 +436,60 @@ class Debias_Trainer(Trainer) :
             stats_ = {}
             n_words, xe_loss, n_valid = 0, 0, 0
             (x, lengths, langs), y1, y2, weight_out = batch
-            max_len = lengths.max()
             stats_['n_words'] = lengths.sum().item()
             flag = True
             if self.params.train_only_on_negative_examples :
                 #negative_examples = ~(y2.squeeze() < self.params.threshold)
                 negative_examples = y2.squeeze() > self.params.threshold
-                x = x[:,negative_examples] # (seq_len, bs-ϵ)
-                lengths = lengths[negative_examples]
-                y1 = y1[negative_examples]
-                y2 = y2[negative_examples]
-                weight_out = weight_out[negative_examples]
-                flag = negative_examples.any()
+                batch, flag = select_with_mask(batch, mask = negative_examples)
+                (x, lengths, langs), y1, y2, weight_out = batch
             if flag :    
                 y = y2 if self.params.version == 3 else y1
                 x, y, lengths, langs = to_cuda(x, y, lengths, langs)
                 #langs = langs if self.params.n_langs > 1 else None
-                langs = None
+                #langs = None
                 batch = (x, lengths, langs), y1, y2, weight_out
                 classif_loss, logits, z, z_list, stats, y_hat = self.classif_step(get_loss, y, batch)
-                self.optimize(classif_loss, retain_graph = True)
+                #self.optimize(classif_loss, retain_graph = True)
                 stats_ = {**stats, **stats_}
-                mask_deb = y_hat.squeeze()>=self.lambda_ if self.params.positive_label==0 else y_hat.squeeze()<self.lambda_
-                non_mask_deb = ~mask_deb
+                
+                version = 1
+                if version == 0: 
+                    mask_deb = y_hat.squeeze()>=self.lambda_ if self.params.positive_label==0 else y_hat.squeeze()<self.lambda_
+                    non_mask_deb = ~mask_deb
+                    flag = mask_deb.any()
+                    rec_step = non_mask_deb.any()
+                else :
+                    mask_deb = None
+                    non_mask_deb = None
+                    flag = True
+                    rec_step = True 
                 ###############
                 z = z.transpose(0, 1) # (bs-ϵ, seq_len, dim)
                 bs = z.size(0)
-                flag = mask_deb.any()
                 loss_deb = 0 # torch.tensor(float("nan"))
                 loss_rec = 0 # torch.tensor(float("nan"))
                 if flag :  # if f(z) > lambda :
-                    loss_deb, _, _ = self.debias_step(logits, lengths, z, z_list, mask_deb, bs)
-                if non_mask_deb.any() : # else :
-                    try :
-                        loss_rec, word_scores, y = self.enc_dec(x, lengths, langs, z, 
-                                                        non_mask_deb, bs, max_len)
-                        # update stats
-                        n_words += y.size(0)
-                        xe_loss += loss_rec.item() * len(y)
-                        n_valid += (word_scores.max(1)[1] == y).sum().item()
-                        # compute perplexity and prediction accuracy
-                        n_words = n_words+eps
-                        stats_['rec_ppl'] = np.exp(xe_loss / n_words)
-                        stats_['rec_acc'] = 100. * n_valid / n_words
-                          
-                    except RuntimeError :
-                        # TODO
-                        """
-                        transformer.py, line 221, in forward
-                            mask = (mask == 0).view(mask_reshape).expand_as(scores)   # (bs, n_heads, qlen, klen)
-                        RuntimeError: shape '[1, 1, 1, 10]' is invalid for input of size 5
-                        """
-                        pass                  
+                    loss_deb, _, _ = self.debias_step(y, lengths, z, z_list, mask_deb, bs)
+                if rec_step : # else :
+                    loss_rec, word_scores, y_ = self.enc_dec(x, lengths, langs, z, non_mask_deb, bs)
+                    # update stats
+                    n_words += y_.size(0)
+                    xe_loss += loss_rec.item() * len(y_)
+                    n_valid += (word_scores.max(1)[1] == y_).sum().item()
+                    # compute perplexity and prediction accuracy
+                    n_words = n_words+eps
+                    stats_['rec_ppl'] = np.exp(xe_loss / n_words)
+                    stats_['rec_acc'] = 100. * n_valid / n_words
 
                 # optimize
                 loss = classif_loss + loss_deb + loss_rec
-                self.pre_trainer.optimize(loss)  
+                #self.pre_trainer.optimize(loss)  
                 stats_["loss_"] = loss.item() 
 
                 #if True :
                 if self.n_total_iter % self.log_interval == 0 :
-                    try :
-                        # TODO
-                        self.generate(x, lengths, z)
-                    except AssertionError : # assert lengths.max() == slen and lengths.shape[0] == bs
-                        pass
+                    self.generate(x, lengths, langs, z)
 
             # number of processed sentences / words
             self.n_sentences += self.params.batch_size
@@ -359,24 +528,19 @@ class Debias_Trainer(Trainer) :
             for batch in tqdm(self.val_data_iter, desc='val'):
                 n_words, xe_loss, n_valid = 0, 0, 0
                 (x, lengths, langs), y1, y2, weight_out = batch
-                max_len = lengths.max()
-                # only on negative example
                 flag = True
+                """
+                # only on negative example
                 #negative_examples = ~(y2.squeeze() < self.params.threshold)
-                #"""
                 negative_examples = y2.squeeze() > self.params.threshold
-                x = x[:,negative_examples] # (seq_len, bs-ϵ)
-                lengths = lengths[negative_examples]
-                y1 = y1[negative_examples]
-                y2 = y2[negative_examples]
-                weight_out = weight_out[negative_examples]
-                flag = negative_examples.any()
+                batch, flag = select_with_mask(batch, mask = negative_examples)
+                (x, lengths, langs), y1, y2, weight_out = batch
                 #"""
                 if flag :    
                     y = y2 if self.params.version == 3 else y1
                     x, y, lengths, langs = to_cuda(x, y, lengths, langs)
                     #langs = langs if self.params.n_langs > 1 else None
-                    langs = None
+                    #langs = None
                     batch = (x, lengths, langs), y1, y2, weight_out
                     _, _, z, _, stats, y_hat = self.classif_step(get_loss, y, batch)
                     z = z.transpose(0, 1) # (bs-ϵ, seq_len, dim)
@@ -386,28 +550,25 @@ class Debias_Trainer(Trainer) :
                     z_prime = z_prime.transpose(0, 1) # (bs-ϵ, seq_len, dim)
 
                     non_mask_deb = torch.BoolTensor([True]*bs)
-                    loss_rec, word_scores, y = self.enc_dec(x, lengths, langs, z, 
-                                                            non_mask_deb, bs, max_len)
+                    loss_rec, word_scores, y_ = self.enc_dec(x, lengths, langs, z, non_mask_deb, bs)
                     # update stats
-                    n_words += y.size(0)
-                    xe_loss += loss_rec.item() * len(y)
-                    n_valid += (word_scores.max(1)[1] == y).sum().item()
+                    n_words += y_.size(0)
+                    xe_loss += loss_rec.item() * len(y_)
+                    n_valid += (word_scores.max(1)[1] == y_).sum().item()
                     # compute perplexity and prediction accuracy
                     n_words = n_words+eps
                     stats['rec_ppl'] = np.exp(xe_loss / n_words)
                     stats['rec_acc'] = 100. * n_valid / n_words
-                    try :            
-                        texts=self.generate(x, lengths, z, z_prime = z_prime, log = False)
-                        for k, v in texts.items():
-                            text_z_prime[k].append(v)
-                        references.extend(texts[KEYS["input"]])
-                        hypothesis.extend(texts[KEYS["gen"]])
-                        hypothesis2.extend(texts[KEYS["deb"]])
-                        text_z_prime["origin_labels"].append(y2.cpu().numpy())
-                        text_z_prime["pred_label"].append(y_hat.cpu().numpy())
-                    except AssertionError :
-                        pass
-                
+    
+                    texts = self.generate(x, lengths, langs, z, z_prime = z_prime, log = False)
+                    for k, v in texts.items():
+                        text_z_prime[k].append(v)
+                    references.extend(texts[KEYS["input"]])
+                    hypothesis.extend(texts[KEYS["gen"]])
+                    hypothesis2.extend(texts[KEYS["deb"]])
+                    text_z_prime["origin_labels"].append(y.cpu().numpy())
+                    text_z_prime["pred_label"].append(y_hat.cpu().numpy())
+
                     total_stats.append(stats)
 
         self.end_eval(text_z_prime, references, hypothesis, hypothesis2)
@@ -456,11 +617,11 @@ class Debias_Trainer(Trainer) :
 
                 # evaluate BLEU score
                 self.bleu = eval_moses_bleu(ref_path, hyp_path)
-                self.logger.info("BLEU input-gen %s %s : %f" % (hyp_path, ref_path, self.bleu))
+                self.logger.info("BLEU input-gen : %f (%s, %s)" % (self.bleu, hyp_path, ref_path))
                 bleu = eval_moses_bleu(ref_path, hyp_path2)
-                self.logger.info("BLEU input-deb %s %s : %f" % (hyp_path2, ref_path, bleu))
+                self.logger.info("BLEU input-deb : %f (%s, %s)" % (bleu, hyp_path2, ref_path))
                 bleu = eval_moses_bleu(hyp_path, hyp_path2)
-                self.logger.info("BLEU gen-deb %s %s : %f" % (hyp_path, hyp_path2, bleu))
+                self.logger.info("BLEU gen-deb : %f (%s, %s)" % (bleu, hyp_path, hyp_path2))
 
     def fgim_algorithm(self, get_loss, end_of_epoch):
         """
@@ -471,16 +632,16 @@ class Debias_Trainer(Trainer) :
         lambda_ = 0.9
         max_iter_per_epsilon = 100
         w = [2.0,3.0,4.0,5.0,6.0,7.0,8.0]
-        limit_batches = 3
+        limit_batches = 10
         
         # eval mode
         #self.deb.eval() 
-        self.model.eval()
+        #self.model.eval()
         self.pre_trainer.encoder.eval()
         self.pre_trainer.decoder.eval()
 
-        text_z_prime = {KEYS["input"] : [], KEYS["gen"] : [], KEYS["deb"] : [], 
-                        "origin_labels" : [], "pred_label" : []}
+        text_z_prime = {KEYS["input"] : [], KEYS["gen"] : [], KEYS["deb"] : [],  
+                        "origin_labels" : [], "pred_label" : [], "change" : [], "w_i":[]}
         references = []
         hypothesis = []
         hypothesis2 = []
@@ -502,24 +663,21 @@ class Debias_Trainer(Trainer) :
             if self.params.train_only_on_negative_examples :
                 #negative_examples = ~(y2.squeeze() < self.params.threshold)
                 negative_examples = y2.squeeze() > self.params.threshold
-                x = x[:,negative_examples] # (seq_len, bs-ϵ)
-                lengths = lengths[negative_examples]
-                y1 = y1[negative_examples]
-                y2 = y2[negative_examples]
-                weight_out = weight_out[negative_examples]
-                flag = negative_examples.any()
+                batch, flag = select_with_mask(batch, mask = negative_examples)
+                (x, lengths, langs), y1, y2, weight_out = batch
             if flag :    
                 y = y2 if self.params.version == 3 else y1
                 x, y, y2, lengths, langs = to_cuda(x, y, y2, lengths, langs)
-                langs = None
+                #langs = None
                 batch = [(x, lengths, langs), y1, y2, weight_out]
                 origin_data = self.pre_trainer.encoder('fwd', x=x, lengths=lengths, langs=langs, causal=False)
                 # Define target label
                 if self.bin_classif :
-                    y_prime = 1.0 - (y2 > 0.5).float()
+                    #y_prime = self.max_label - y
+                    y_prime = self.max_label - (y > self.params.threshold).float()
                 else :
-                    #y_prime = 5.0 - (y2 > self.params.threshold).float()
-                    y_prime = 5 - y2#.float()
+                    #y_prime = self.max_label - (y > self.params.threshold).float()
+                    y_prime = self.max_label - y#.float()
                 batch[2 if self.params.version == 3 else 1] = y_prime
                 flag = False
                 for w_i in w:
@@ -537,7 +695,6 @@ class Debias_Trainer(Trainer) :
                         classif_loss.backward()
                         data = data - w_i * data.grad.data
                     else :
-                        data = origin_data
                         logits, classif_loss = self.model.predict(
                             data, y_prime, weights = self.train_data_iter.weights)
                         #_, stats = get_loss(None, batch, self.params, None, logits = logits, loss = classif_loss, mode="train", epoch = self.epoch)
@@ -548,7 +705,8 @@ class Debias_Trainer(Trainer) :
                     while True:
                         #if torch.cdist(y_hat, y_prime) < threshold :
                         #if ((y_hat - y_prime)**2).sum().float().sqrt() < threshold :
-                        if (y_hat - y_prime).abs().float().mean() < threshold :
+                        #if (y_hat - y_prime).abs().float().mean() < threshold :
+                        if y_hat == y_prime :
                             flag = True
                             break
             
@@ -566,20 +724,20 @@ class Debias_Trainer(Trainer) :
                         w_i = lambda_ * w_i
                         if it > max_iter_per_epsilon:
                             break
-
-                    try :            
-                        texts = self.generate(x, lengths, origin_data, z_prime = data, log = False)
-                        for k, v in texts.items():
-                            text_z_prime[k].append(v)
-                        references.extend(texts[KEYS["input"]])
-                        hypothesis.extend(texts[KEYS["gen"]])
-                        hypothesis2.extend(texts[KEYS["deb"]])
-                        text_z_prime["origin_labels"].append(y2.cpu().numpy())
-                        text_z_prime["pred_label"].append(y_hat.cpu().numpy())
-                        text_z_prime["change"].append([flag]*len(y2))
-                    except AssertionError :
-                        pass
                     
+                data = data.transpose(0, 1)
+                origin_data = origin_data.transpose(0, 1)      
+                texts = self.generate(x, lengths, langs, origin_data, z_prime = data, log = False)
+                for k, v in texts.items():
+                    text_z_prime[k].append(v)
+                references.extend(texts[KEYS["input"]])
+                hypothesis.extend(texts[KEYS["gen"]])
+                hypothesis2.extend(texts[KEYS["deb"]])
+                text_z_prime["origin_labels"].append(y2.cpu().numpy())
+                text_z_prime["pred_label"].append(y_hat.cpu().numpy())
+                text_z_prime["change"].append([flag]*len(y2))
+                text_z_prime["w_i"].append([w_i]*len(y2))
+
             n_batches += 1
             if n_batches > limit_batches:
                 break   

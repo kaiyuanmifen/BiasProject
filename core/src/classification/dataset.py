@@ -288,7 +288,8 @@ class BiasClassificationDataset(Dataset):
             while self.n_samples > i :
                 i += self.batch_size
                 inst = list(zip(*data[i-self.batch_size:i]))
-                tmp.append(tuple([self.to_tensor(inst[0])] + [torch.stack(y) for y in inst[1:]]))
+                langs_ids = self.langs_ids[i-self.batch_size:i]
+                tmp.append(tuple([self.to_tensor(inst[0], lang_id = langs_ids)] + [torch.stack(y) for y in inst[1:]]))
             self.data = tmp
         else :
             self.test = True
@@ -323,7 +324,8 @@ class BiasClassificationDataset(Dataset):
         if not self.in_memory :
             inst = self.data[index]
             if self.test :
-                return tuple([self.to_tensor(inst[0])] + [torch.stack(y) for y in inst[1:]])
+                langs_id = self.langs_ids[index]
+                return tuple([self.to_tensor(inst[0], lang_id = langs_id)] + [torch.stack(y) for y in inst[1:]])
             else :
                 return tuple([inst[0]] + [torch.stack(y) for y in inst[1:]])
         else :
@@ -339,7 +341,8 @@ class BiasClassificationDataset(Dataset):
                 inst = list(zip(*self.data[i-self.batch_size:i]))
                 if self.test :
                     try :
-                        yield tuple([self.to_tensor(inst[0])] + [torch.stack(y) for y in inst[1:]])
+                        langs_ids = self.langs_ids[i-self.batch_size:i]
+                        yield tuple([self.to_tensor(inst[0], lang_id = langs_ids)] + [torch.stack(y) for y in inst[1:]])
                     except IndexError : # list index out of range
                         pass
                 else :
@@ -363,6 +366,7 @@ class BiasClassificationDataset(Dataset):
             rows = sorted(rows, key = lambda x : len(x[1][self.text_column].split()), reverse=False)
         
         weights = [0] * self.params.n_labels
+        self.langs_ids = [] #if params.n_langs > 1 else []
         
         for row in rows : 
             row = row[1]
@@ -378,6 +382,7 @@ class BiasClassificationDataset(Dataset):
                 #  label the average of the scores with the confidence scores as weighting
                 label = int(round(sum([ score * conf for score, conf in  zip(b, c) ]) / s))
                 weights[label] = weights[label] + 1 
+                self.langs_ids.append(label)
                 label = torch.tensor(label, dtype=torch.long)
                 yield [text, label, label, weight_out]
             
@@ -394,6 +399,7 @@ class BiasClassificationDataset(Dataset):
                     label = b[np.argmax(a = c)] 
                     
                 weights[label] = weights[label] + 1
+                self.langs_ids.append(label)
                 yield [text, torch.tensor(p_c, dtype=torch.float), torch.tensor(label, dtype=torch.long), weight_out]
             
             elif self.version == 5 :
@@ -402,12 +408,14 @@ class BiasClassificationDataset(Dataset):
                 c = sum(c) / len(c)
                 label = int(b >= self.threshold) # 1 if b >= self.threshold else 0
                 weights[label] = weights[label] + 1
+                self.langs_ids.append(label)
                 yield [text, torch.tensor([b, c], dtype=torch.float), torch.tensor(label, dtype=torch.long), weight_out]
             
             elif self.version == 6:
                 # TODO
                 label = int(round(sum([ score * conf for score, conf in  zip(b, c) ]) / s))
                 weights[label] = weights[label] + 1
+                self.langs_ids.append(label)
                 yield [text, torch.tensor([b, c], dtype=torch.long), torch.tensor(label, dtype=torch.long), weight_out]
             
             elif self.version == 7 :
@@ -417,6 +425,7 @@ class BiasClassificationDataset(Dataset):
                 label = sum([ score * conf for score, conf in  zip(b, c) ]) / s
                 label = int(label >= self.threshold) # 1 if label >= self.threshold else 0
                 weights[label] = weights[label] + 1
+                self.langs_ids.append(label)
                 yield [text, torch.tensor(label, dtype=torch.float), torch.tensor(label, dtype=torch.long), weight_out]
             
         self.weights = weights
@@ -491,5 +500,3 @@ class BiasClassificationDataset(Dataset):
                     
         random.shuffle(tmp)
         return data + tmp, count
-    
-

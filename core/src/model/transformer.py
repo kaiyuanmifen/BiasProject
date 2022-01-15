@@ -532,7 +532,8 @@ class TransformerModel(nn.Module):
         scores, loss = self.pred_layer(masked_tensor, y, get_scores, reduction=reduction)
         return scores, loss
 
-    def generate(self, src_enc, src_len, tgt_lang_id, max_len=200, sample_temperature=None):
+    def generate(self, src_enc, src_len, tgt_lang_id, max_len=200, sample_temperature=None,
+                langs = None):
         """
         Decode a sentence given initial start.
         `x`:
@@ -564,8 +565,11 @@ class TransformerModel(nn.Module):
         positions = torch.arange(max_len, out=positions).unsqueeze(1).expand(max_len, bs)
 
         # language IDs
-        langs = src_len.new(max_len).long().fill_(tgt_lang_id)
-        langs = langs.unsqueeze(1).expand(max_len, bs)
+        if langs is None :
+            langs = src_len.new(max_len).long().fill_(tgt_lang_id)
+            langs = langs.unsqueeze(1).expand(max_len, bs)
+        else :
+            assert langs.size() == (max_len, bs)
 
         # current position / max lengths / length of generated sentences / unfinished sentences
         cur_len = 1
@@ -622,7 +626,8 @@ class TransformerModel(nn.Module):
 
         return generated[:cur_len], gen_len
 
-    def generate_beam(self, src_enc, src_len, tgt_lang_id, beam_size, length_penalty, early_stopping, max_len=200):
+    def generate_beam(self, src_enc, src_len, tgt_lang_id, beam_size, length_penalty, 
+                    early_stopping, max_len=200, langs = None):
         """
         Decode a sentence given initial start.
         `x`:
@@ -665,7 +670,10 @@ class TransformerModel(nn.Module):
         positions = torch.arange(max_len, out=positions).unsqueeze(1).expand_as(generated)
 
         # language IDs
-        langs = positions.clone().fill_(tgt_lang_id)
+        if langs is None :
+            langs = positions.clone().fill_(tgt_lang_id)
+        else :
+            assert langs.size() == positions.size()
 
         # scores for each sentence in the beam
         beam_scores = src_enc.new(bs, beam_size).fill_(0)

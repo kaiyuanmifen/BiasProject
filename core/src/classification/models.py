@@ -474,18 +474,20 @@ class XLMBertClassifier(nn.Module):
             
             # adding missing parameters
             params.max_batch_size = 0
-            params.n_langs = 1
+            #params.n_langs = 1
             
             # reload langs from pretrained model
             #params.n_langs = embedder.pretrain_params['n_langs']
             #params.id2lang = embedder.pretrain_params['id2lang']
             #params.lang2id = embedder.pretrain_params['lang2id']
-            params.lang = params.lgs
+            
+            #params.lang = params.lgs
             try :
-                params.lang_id = pretrain_params.lang2id[params.lang]
+                #params.lang_id = pretrain_params.lang2id[params.lang]
+                params.n_langs = len(pretrain_params.lang2id)
             except KeyError :
-                params.lang_id = 0
-                params.n_langs = 0
+                #params.lang_id = 0
+                params.n_langs = 1
             
             params.freeze_transformer = params.finetune_layers == ""    
             if params.freeze_transformer :
@@ -500,15 +502,18 @@ class XLMBertClassifier(nn.Module):
             p_model = getattr(pre_trainer, params.reload_key)
             self.embedder = SentenceEmbedder(p_model, self.dico,  pre_trainer.params)
             d_model = p_model.dim
+            """"
             if type(params.lgs) == list :
                 params.lang = params.lgs[0]
             else :
                 params.lang = params.lgs
+            """
             try :
-                params.lang_id = params.lang2id[params.lang]
+                #params.lang_id = params.lang2id[params.lang]
+                params.n_langs = len(params.lang2id)
             except KeyError :
                 params.lang_id = 0
-                params.n_langs = 0
+                params.n_langs = 1
 
             params.freeze_transformer = True
             params.finetune_layers == ""
@@ -522,7 +527,8 @@ class XLMBertClassifier(nn.Module):
         self.finetune_layers = params.finetune_layers
         self.params = params
         
-    def forward(self, x, lengths, y, positions=None, langs=None, weights = None, weight_out = None, get_scores = True):
+    def forward(self, x, lengths, y, positions=None, langs=None, weights = None, weight_out = None, 
+                get_scores = True, do_sum = False):
         """
         Inputs:
             `x`        : LongTensor of shape (slen, bs)
@@ -530,9 +536,9 @@ class XLMBertClassifier(nn.Module):
         """
         if self.freeze_transformer :
             with torch.no_grad():
-                h = self.embedder.get_embeddings(x, lengths, positions=positions, langs=langs, whole_output = self.whole_output)
+                h = self.embedder.get_embeddings(x, lengths, positions=positions, langs=langs, whole_output = self.whole_output, do_sum = do_sum)
         else :
-            h = self.embedder.get_embeddings(x, lengths, positions=positions, langs=langs, whole_output = self.whole_output)
+            h = self.embedder.get_embeddings(x, lengths, positions=positions, langs=langs, whole_output = self.whole_output, do_sum = do_sum)
         
         if True :
             return self.pred_layer(h, y, weights=weights, weight_out=weight_out)
@@ -545,10 +551,14 @@ class XLMBertClassifier(nn.Module):
                 l2_reg += torch.norm(param)
             return scores, loss + l2_lambda * l2_reg
 
-    def predict(self, tensor, y, weights, weight_out = None):
+    def predict(self, tensor, y, weights, weight_out = None, do_sum = False):
         """
         """
-        return self.pred_layer(tensor[0] if not self.whole_output else tensor, y, weights=weights, weight_out = weight_out)
+        if do_sum :
+            h = tensor.sum(dim=0)
+        else :
+            h = tensor[0] if not self.whole_output else tensor
+        return self.pred_layer(h, y, weights=weights, weight_out = weight_out)
 
     def get_optimizers(self, params) :
         optimizer_p = get_optimizer(self.pred_layer.parameters(), params.optimizer_p)
@@ -588,7 +598,7 @@ class XLMBertClassifier(nn.Module):
         self.pred_layer = self.pred_layer.to(device)
         return self
 
-    def to_tensor(self, sentences):
+    def to_tensor(self, sentences, lang_id = None):
         if type(sentences) == str :
             sentences = [sentences]
         else :
@@ -604,9 +614,10 @@ class XLMBertClassifier(nn.Module):
                 if lengths[j] > 2:  # if sentence not empty
                     batch[1:lengths[j] - 1, j].copy_(s)
                 batch[lengths[j] - 1, j] = self.params.eos_index
-            langs = batch.clone().fill_(self.params.lang_id)
+            #langs = batch.clone().fill_(self.params.lang_id)
             batch, lengths = truncate(batch, lengths, self.params.max_len, self.params.eos_index)
-            return batch, lengths, langs
+            word_ids = batch
+            #return batch, lengths, langs
         else :
             # add </s> sentence delimiters
             sentences = [(('</s> %s </s>' % sent.strip()).split()) for sent in sentences]
@@ -623,8 +634,20 @@ class XLMBertClassifier(nn.Module):
             # langs = torch.LongTensor([params.lang2id[lang] for _, lang in sentences]).unsqueeze(0).expand(slen, bs) if params.n_langs > 1 else None
             langs = None
             word_ids, lengths = truncate(word_ids, lengths, self.params.max_len, self.params.eos_index)
-            return word_ids, lengths, langs
-        
+            #return word_ids, lengths, langs
+
+        langs = None
+        if lang_id is not None :
+            slen, bs = word_ids.shape
+            if type(lang_id) == int :
+                langs = word_ids.new(slen, bs).fill_(lang_id)
+            elif type(lang_id) == list :
+                assert len(lang_id) == bs
+                #langs = torch.LongTensor(lang_id) # (bs)
+                langs = torch.LongTensor(slen*[lang_id])#.transpose(0, 1)
+
+        return word_ids, lengths, langs
+    
 class GoogleBertClassifier(nn.Module):
 
     def __init__(self, n_labels, params, logger):
@@ -672,7 +695,8 @@ class GoogleBertClassifier(nn.Module):
         self.params = params
         self.logger = logger
         
-    def forward(self, x, lengths, y, positions=None, langs=None, weights = None, weight_out = None, get_scores = True):
+    def forward(self, x, lengths, y, positions=None, langs=None, weights = None, 
+                weight_out = None, get_scores = True, do_sum = False):
         """
         Inputs:
             `x`        : LongTensor of shape (bs, slen)
@@ -683,13 +707,22 @@ class GoogleBertClassifier(nn.Module):
         else :
             h = self.embedder(x)[0] 
         
-        return self.pred_layer(h.transpose(0, 1) if self.whole_output else h[:, 0], y, weights=weights, weight_out=weight_out)
+        if do_sum :
+            h = h.sum(dim=1) # [batch size, emb dim]
+        else :
+            h = h.transpose(0, 1) if self.whole_output else h[:, 0]
+        
+        return self.pred_layer(h, y, weights=weights, weight_out=weight_out)
 
-    def predict(self, h, y, weights, weight_out = None):
+    def predict(self, h, y, weights, weight_out = None, do_sum = False):
         """
         h : [batch size, sent len, emb dim]
         """
-        return self.pred_layer(h.transpose(0, 1) if self.whole_output else h[:, 0], y, weights=weights, weight_out = weight_out)
+        if do_sum :
+            h = h.sum(dim=1) # [batch size, emb dim]
+        else :
+            h = h.transpose(0, 1) if self.whole_output else h[:, 0]
+        return self.pred_layer(h, y, weights=weights, weight_out = weight_out)
 
     def get_embedder_parameters(self, layer_range, log=True) :
         n_layers = len(self.embedder.encoder.layer)
@@ -752,8 +785,9 @@ class GoogleBertClassifier(nn.Module):
         tokens = tokens[:self.max_input_length-2]
         return [self.tokenizer.cls_token_id] + self.tokenizer.convert_tokens_to_ids(tokens) + [self.tokenizer.sep_token_id]
 
-    def to_tensor(self, sentences):
-        return to_tensor(sentences, pad_index = self.tokenizer.pad_token_id, tokenize_and_cut = self.tokenize_and_cut, batch_first = True)
+    def to_tensor(self, sentences, lang_id = None):
+        return to_tensor(sentences, pad_index = self.tokenizer.pad_token_id, tokenize_and_cut = self.tokenize_and_cut, 
+                            batch_first = True, lang_id = lang_id)
     
 class SimpleClassifier(nn.Module):
     def __init__(self, n_labels, params, logger, dico : Dictionary = None):
@@ -853,7 +887,6 @@ class SimpleClassifier(nn.Module):
         else :
             return re.split(r'', x) 
         
-    
     def tokenize_and_cut(self, sentence):
         tokens = self.tokenize(sentence.strip()) 
         tokens = tokens[:self.max_input_length]
@@ -873,12 +906,14 @@ class RecurrentClassifier(SimpleClassifier):
         else :
             self.pred_layer = nn.Identity()
         
-    def to_tensor(self, sentences):
+    def to_tensor(self, sentences, lang_id = None):
         if not self.use_pretrained_word_embedding :
             sentences = [self.tokenize(s.strip()) for s in sentences]
-            return to_tensor(sentences, self.pad_index, dico = self.dico, batch_first = False)
+            return to_tensor(sentences, self.pad_index, dico = self.dico, 
+                                batch_first = False, lang_id = lang_id)
         else :
-            return to_tensor(sentences, self.pad_index, tokenize_and_cut = self.tokenize_and_cut, batch_first = False)
+            return to_tensor(sentences, self.pad_index, tokenize_and_cut = self.tokenize_and_cut, 
+                                batch_first = False, lang_id = lang_id)
     
     def fwd(self, tensor, lengths, mask):
         if False : # RuntimeError: start (4) + length (2) exceeds dimension size (4).
@@ -901,7 +936,8 @@ class RNNClassifier(RecurrentClassifier):
         self.net = nn.RNN(self.embedding_dim, self.hidden_dim, num_layers = self.n_layers, 
                             bidirectional=self.bidirectional, dropout = 0 if self.n_layers < 2 else params.dropout)
         
-    def forward(self, x, lengths, y, positions=None, langs=None, weights = None, weight_out = None, get_scores = True):
+    def forward(self, x, lengths, y, positions=None, langs=None, weights = None, 
+                weight_out = None, get_scores = True, do_sum = False):
         """
         Inputs:
             `x`        : LongTensor of shape (slen, bs)
@@ -948,7 +984,8 @@ class LSTMClassifier(RecurrentClassifier):
                             bidirectional=self.bidirectional, 
                             dropout = 0 if self.n_layers < 2 else params.dropout)
         
-    def forward(self, x, lengths, y, positions=None, langs=None, weights = None, weight_out = None, get_scores = True) :
+    def forward(self, x, lengths, y, positions=None, langs=None, weights = None, 
+                weight_out = None, get_scores = True, do_sum = False) :
         """
         Inputs:
             `x`        : LongTensor of shape (slen, bs)
@@ -995,12 +1032,14 @@ class ConvolutionalClassifier(SimpleClassifier):
         else :
             self.pred_layer = nn.Identity()
             
-    def to_tensor(self, sentences):
+    def to_tensor(self, sentences, lang_id = None):
         if not self.use_pretrained_word_embedding :
             sentences = [self.tokenize(s.strip()) for s in sentences]
-            return to_tensor(sentences, self.pad_index, dico = self.dico, batch_first = True)
+            return to_tensor(sentences, self.pad_index, dico = self.dico, 
+                                batch_first = True, lang_id = lang_id)
         else :
-            return to_tensor(sentences, self.pad_index, tokenize_and_cut = self.tokenize_and_cut, batch_first = True)
+            return to_tensor(sentences, self.pad_index, tokenize_and_cut = self.tokenize_and_cut, 
+                                batch_first = True, lang_id = lang_id)
     
 class CNNClassifier(ConvolutionalClassifier):
     def __init__(self, n_labels, params, logger, dico : Dictionary = None, with_output = True):
@@ -1014,7 +1053,8 @@ class CNNClassifier(ConvolutionalClassifier):
             for fs in self.filter_sizes
         ])
         
-    def forward(self, x, lengths, y, positions=None, langs=None, weights = None, weight_out = None, get_scores = True) :
+    def forward(self, x, lengths, y, positions=None, langs=None, weights = None, 
+                weight_out = None, get_scores = True, do_sum = False) :
         """
         Inputs:
             `x`        : LongTensor of shape (bs, slen)
@@ -1037,14 +1077,14 @@ class CNNClassifier(ConvolutionalClassifier):
         return self.pred_layer(cat, y, weights=weights, weight_out=weight_out)
     
     def fwd(self, tensor, lengths, mask):
-        print(tensor.shape)
+        #print(tensor.shape)
         tensor = tensor.unsqueeze(dim=1) # bs x 1 x slen x emb_dim
         conved = [F.relu(conv(tensor)).squeeze(3) for conv in self.net] 
-        print(conved[0].shape)       
+        #print(conved[0].shape)       
         pooled = [F.max_pool1d(conv, conv.shape[2]).squeeze(2) for conv in conved]
         tensor = self.dropout(torch.stack(pooled))
-        print(tensor.shape)
-        exit()
+        #print(tensor.shape)
+        #exit()
         return tensor
     
 class CNN1dClassifier(ConvolutionalClassifier):
@@ -1059,7 +1099,8 @@ class CNN1dClassifier(ConvolutionalClassifier):
             for fs in self.filter_sizes
         ])
         
-    def forward(self, x, lengths, y, positions=None, langs=None, weights = None, weight_out = None, get_scores = True) :
+    def forward(self, x, lengths, y, positions=None, langs=None, weights = None, 
+                weight_out = None, get_scores = True, do_sum = False) :
         """
         Inputs:
             `x`        : LongTensor of shape (bs, slen)

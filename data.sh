@@ -9,7 +9,7 @@ set -e
 
 # languages 
 lgs=$1
- 
+
 # path where processed files will be stored
 OUTPATH=/content/processed
 
@@ -36,14 +36,12 @@ threads_for_tokenizer=16
 # Percentage of data to use as test data (%)
 test_size=10 
 # Percentage of data to use as validation data (%)
-val_size=10              
+val_size=10   
 
-# tools paths
-TOOLS_PATH=tools
-TOKENIZE=$TOOLS_PATH/tokenizer_our.sh
-LOWER_REMOVE_ACCENT=$TOOLS_PATH/lowercase_and_remove_accent.py
-FASTBPE=$TOOLS_PATH/fastBPE/fast
-#PROCESSED_FILE=../scripts/build_meta_data_multixlm.sh
+all_split=$(echo train-valid-test | sed -e 's/\-/ /g')
+#all_split=train
+proxy_split=train
+#proxy_split=test
 
 # The n_sample parameter is optional, and when it is not passed or when it exceeds the dataset size, the whole dataset is considered
 n_samples=-1
@@ -53,12 +51,19 @@ n_samples=-1
 sub_tasks=...
 tasks_n_samples=-1
 
+# tools paths
+TOOLS_PATH=tools
+TOKENIZE=$TOOLS_PATH/tokenizer_our.sh
+LOWER_REMOVE_ACCENT=$TOOLS_PATH/lowercase_and_remove_accent.py
+FASTBPE=$TOOLS_PATH/fastBPE/fast
+#PROCESSED_FILE=../scripts/build_meta_data_multixlm.sh
+
 ##############################################
 
 function abrev() {
     # todo
     result=$1
- }
+}
 
 if [ $sub_tasks="..." ]; then
     sub_tasks=""
@@ -71,7 +76,7 @@ if [ $sub_tasks="..." ]; then
             a=$result
             abrev ${langs_array[$j]} 
             b=$result
-        	sub_tasks=$sub_tasks,$a-$b:$tasks_n_samples
+			sub_tasks=$sub_tasks,$a-$b:$tasks_n_samples
 		done
 	done
 	# Remove the comma in front

@@ -11,7 +11,7 @@ set -e
 
 # languages 
 lgs=$1
-       
+
 # path containing the csvs folder
 # zip_file_link (csvs) = https://drive.google.com/file/d/1NuSJ-NT_BsU1qopLu6avq6SzUEf6nVkk/view?usp=sharing
 # download and unzip in $csv_path
@@ -65,7 +65,6 @@ tasks_n_samples=-1
 
 ##############################################
 
- 
 function abrev() {
     if [[ $1 = "Francais" ]]; then
         result="fr"
@@ -98,7 +97,7 @@ if [ $sub_tasks="..." ]; then
             a=$result
             abrev ${langs_array[$j]} 
             b=$result
-        	sub_tasks=$sub_tasks,$a-$b:$tasks_n_samples
+            sub_tasks=$sub_tasks,$a-$b:$tasks_n_samples
 		done
 	done
 	# Remove the comma in front
@@ -124,7 +123,7 @@ done
 echo "======================="
 echo "Processed"
 echo "======================="
- 
+
 chmod +x ../scripts/build_meta_data_multixlm.sh
 . ../scripts/build_meta_data_multixlm.sh $sub_tasks $n_samples $add_para_data_to_mono_data
 # todo : rendre les choses dynamiques comme ceci

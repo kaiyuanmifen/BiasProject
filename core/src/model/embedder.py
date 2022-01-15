@@ -205,7 +205,7 @@ class SentenceEmbedder(object):
     def predict(self, *args, **kwds):
         return self.model.predict(*args, **kwds)
 
-    def get_embeddings(self, x, lengths, positions=None, langs=None, whole_output = False):
+    def get_embeddings(self, x, lengths, positions=None, langs=None, whole_output = False, do_sum=False):
         """
         Inputs:
             `x`        : LongTensor of shape (slen, bs)
@@ -222,5 +222,6 @@ class SentenceEmbedder(object):
         assert tensor.size() == (slen, bs, self.out_dim)
 
         # single-vector sentence representation (first column of last layer)
+        if do_sum :
+            return tensor.sum(dim=0)
         return tensor[0] if not whole_output else tensor
-
